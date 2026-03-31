@@ -364,11 +364,11 @@ async function scrapeRateCap(): Promise<Map<string, GateRateCapEntry>> {
     }
     parseRows(page1Rows);
 
-    // ── Remaining pages — click "→ next" arrow until it is disabled ─────────
-    // We intentionally do NOT rely on totalPages: Gate's pagination bar shows
-    // a truncated list of numbers that may not reveal the true last page.
-    // Instead we run the disabled-check inside the browser context (more
-    // reliable than Playwright getAttribute which can fail on stale handles).
+    // ── Remaining pages — click "→ next" until disabled ─────────────────────
+    // Simple loop: get "disabled" HTML attribute on the last pagination button.
+    // On the last page Gate/Mantine sets the disabled attribute on that button.
+    // We do NOT rely on totalPages (the visible page numbers are truncated and
+    // may not reflect the actual last page).
     const PAGE_BTN_SEL = ".mantine-GatePagination-item, .mantine-Pagination-item";
     const MAX_PAGES = 300;
     let pageNum = 2;
@@ -376,38 +376,33 @@ async function scrapeRateCap(): Promise<Map<string, GateRateCapEntry>> {
     let lastFirstPair = "";
 
     while (pageNum <= MAX_PAGES) {
-      // Short settle so Mantine finishes re-rendering after the last click
-      await page.waitForTimeout(500);
+      await page.waitForTimeout(400);
 
-      // Check disabled state inside the browser — handles HTML `disabled`,
-      // Mantine `data-disabled="true"`, and `aria-disabled="true"` in one shot.
-      const isLastPage: boolean = await page.evaluate((sel: string) => {
-        const btns = Array.from(document.querySelectorAll<HTMLButtonElement>(sel));
-        if (!btns.length) return true;
-        const last = btns[btns.length - 1];
-        return (
-          last.disabled === true ||
-          last.getAttribute("data-disabled") === "true" ||
-          last.getAttribute("aria-disabled") === "true"
-        );
-      }, PAGE_BTN_SEL).catch(() => true); // treat evaluate errors as "last page"
+      // Read "disabled" attribute — returns "" or value if present, null if absent.
+      // Also log button texts on first few pages for diagnostics.
+      const nextBtn = page.locator(PAGE_BTN_SEL).last();
+      const disabledAttr = await nextBtn.getAttribute("disabled").catch(() => "err");
 
-      if (isLastPage) {
-        console.log(`[gate-rate-cap] Next button disabled at page ${pageNum - 1}`);
+      if (pageNum <= 3) {
+        const allTexts = await page.locator(PAGE_BTN_SEL).allInnerTexts().catch(() => [] as string[]);
+        console.log(`[gate-rate-cap] Page ${pageNum - 1} pagination buttons: ${JSON.stringify(allTexts)}`);
+      }
+
+      if (disabledAttr !== null) {
+        console.log(`[gate-rate-cap] Next button disabled at page ${pageNum - 1} (attr="${disabledAttr}")`);
         break;
       }
 
-      // Click the "→ next" button
-      await page.locator(PAGE_BTN_SEL).last().click().catch(() => null);
+      await nextBtn.click().catch(() => null);
       await page.waitForTimeout(1_500);
 
       const pageRows = await extractRows();
 
-      // Detect if pagination is stuck (same first pair as last iteration)
+      // Detect stuck pagination: same first row as previous page → already on last page
       const firstPair = pageRows[0]?.pair ?? "";
       if (firstPair && firstPair === lastFirstPair) {
         consecutiveEmpty++;
-        if (consecutiveEmpty >= 3) {
+        if (consecutiveEmpty >= 2) {
           console.log(`[gate-rate-cap] Pagination stuck at page ${pageNum - 1}, stopping`);
           break;
         }
@@ -427,10 +422,30 @@ async function scrapeRateCap(): Promise<Map<string, GateRateCapEntry>> {
     await browser.close();
   }
 
-  // If scrape returned 0 results, fall back
+  // If scrape returned 0 results, use full fallback
   if (result.size === 0) {
     console.log("[gate-rate-cap] Scrape returned 0 tokens, using fallback");
     return apiFallbackWithBorrowable();
+  }
+
+  // ── Hybrid merge: fill in tokens NOT found on the rate-cap page ───────────
+  // Some tokens exist in earn/uni/currencies (API fallback) but not on the
+  // rate-cap page (or were missed by pagination). Merge them so that no data
+  // disappears compared to the pre-Playwright API-only state.
+  try {
+    const apiData = await fetchFallback();
+    let added = 0;
+    for (const [token, entry] of apiData.entries()) {
+      if (!result.has(token)) {
+        result.set(token, entry);
+        added++;
+      }
+    }
+    if (added > 0) {
+      console.log(`[gate-rate-cap] Hybrid merge: added ${added} tokens from API fallback (not on rate-cap page)`);
+    }
+  } catch (err) {
+    console.warn("[gate-rate-cap] Hybrid merge fallback failed:", err);
   }
 
   return result;

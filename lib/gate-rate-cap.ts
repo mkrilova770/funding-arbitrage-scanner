@@ -312,10 +312,24 @@ async function scrapeRateCap(): Promise<Map<string, GateRateCapEntry>> {
           if (cells.length < 3) continue;
           const allCells = cells.map((c) => (c as HTMLElement).innerText?.trim() ?? "");
           const pair = allCells[0] ?? "";
+          // Pick the cell with the HIGHEST % value per row — this is the borrow
+          // rate cap (e.g. 589% for SKL). A "base fee" column also has a % but
+          // its value (e.g. 3.10%) is lower than the actual VIP0 rate cap.
+          let maxRateVal = -1;
           let rateCellText = "";
           let availCellText = "";
           for (const text of allCells) {
-            if (!rateCellText && /%/.test(text) && text.length < 100) rateCellText = text;
+            if (/%/.test(text) && text.length < 100) {
+              // Extract first number from the text (handles "3.10%/day" → 3.10)
+              const match = text.match(/[\d,.]+/);
+              if (match) {
+                const val = parseFloat(match[0].replace(",", "."));
+                if (!isNaN(val) && val > maxRateVal) {
+                  maxRateVal = val;
+                  rateCellText = text;
+                }
+              }
+            }
             if (!availCellText && /≈/.test(text)) availCellText = text;
           }
           if (pair) result.push({ pair, rateCellText, availCellText });

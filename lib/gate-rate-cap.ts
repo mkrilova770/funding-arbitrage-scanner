@@ -324,16 +324,16 @@ async function scrapeRateCap(): Promise<Map<string, GateRateCapEntry>> {
           if (cells.length < 3) continue;
           const allCells = cells.map((c) => (c as HTMLElement).innerText?.trim() ?? "");
           const pair = allCells[0] ?? "";
-          // Pick the FIRST % cell (= VIP0 rate column) — it appears before
-          // VIP1/VIP2 columns. The cell may hold two lines:
-          //   "daily_rate%/token_rate%\nplatform_daily%/floor_rate%"
-          // parseBorrowApr() will extract the max annual value from the cell.
+          // Column layout (fixed):
+          //  [0] pair  [1] leverage  [2] assets  [3] availability  [4+] VIP rate cols
+          // Use index 3 directly for availability (never search by ≈ — some tokens
+          // have zero liquidity and show "—" or omit the ≈ USDT line entirely).
+          // Pick the FIRST % cell for the VIP0 borrow rate (VIP1/VIP2 come after).
           let rateCellText = "";
-          let availCellText = "";
           for (const text of allCells) {
             if (!rateCellText && /%/.test(text) && text.length < 200) rateCellText = text;
-            if (!availCellText && /≈/.test(text)) availCellText = text;
           }
+          const availCellText = allCells[3] ?? "";
           if (pair) result.push({ pair, rateCellText, availCellText });
         }
         return result;
@@ -351,15 +351,22 @@ async function scrapeRateCap(): Promise<Map<string, GateRateCapEntry>> {
         let liquidityTokenRaw: number | null = null;
         let liquidityUsdtRaw: number | null = null;
 
-        if (row.availCellText) {
+        if (row.availCellText && row.availCellText !== "—") {
+          // Cell format (when available > 0):
+          //   "561.66K\n\n≈ 13.31KUSDT\n\n491.32M"   ← token amt + USDT equivalent
+          //   "561.66K\n\n491.32M"                    ← token amt only (no USDT line)
+          //   "—"                                     ← nothing available (handled above)
           const splitOnApprox = row.availCellText.split("≈");
           if (splitOnApprox.length >= 2) {
-            liquidityTokenRaw = parseAmount(splitOnApprox[0].replace(/\n/g, "").trim());
-            // Take only the part before the next newline to avoid double-suffix issue
+            // First part before ≈ = token amount
+            liquidityTokenRaw = parseAmount(splitOnApprox[0].replace(/\n/g, " ").trim());
+            // Part after ≈ = USDT equivalent; stop at first newline to avoid platform cap
             const usdtRaw = splitOnApprox[1].split("\n")[0].replace(/USDT/gi, "").trim();
             liquidityUsdtRaw = parseAmount(usdtRaw);
           } else {
-            liquidityTokenRaw = parseAmount(row.availCellText.trim());
+            // No ≈ → take first line as token amount (second line is platform cap)
+            const firstLine = row.availCellText.split("\n")[0].trim();
+            liquidityTokenRaw = parseAmount(firstLine);
           }
         }
 

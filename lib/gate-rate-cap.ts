@@ -501,37 +501,58 @@ export async function getGateRateCap(): Promise<Map<string, GateRateCapEntry>> {
         const scrapeCount = data.size;
 
         // ── Hybrid merge ────────────────────────────────────────────────────
-        // Fill tokens missing from the rate-cap page using earn/uni/rate.
-        // Done HERE (not inside scrapeRateCap) so it runs in a clean async
-        // context after the Playwright browser is fully closed.
+        // Fill tokens missing from the rate-cap page using earn/uni/rate (APR)
+        // and earn/uni/currencies (available liquidity).
+        // Done HERE after the Playwright browser is fully closed.
         let mergedCount = 0;
         try {
-          console.log(`[gate-rate-cap] Hybrid merge: scrape has ${scrapeCount} tokens, fetching earn/uni/rate…`);
-          const ratesResp = await fetch("https://api.gateio.ws/api/v4/earn/uni/rate", {
-            signal: AbortSignal.timeout(15_000),
-          });
-          if (ratesResp.ok) {
-            const rates: Array<{ currency: string; est_rate: string }> = await ratesResp.json();
-            console.log(`[gate-rate-cap] earn/uni/rate returned ${rates.length} tokens`);
-            const now = Date.now();
-            for (const item of rates) {
-              const token = item.currency.toUpperCase();
-              if (!data.has(token)) {
-                data.set(token, {
-                  token,
-                  borrowApr: parseFloat(item.est_rate) * VIP0_MULTIPLIER * 100,
-                  liquidityTokenRaw: null,
-                  liquidityUsdtRaw: null,
-                  source: "api-fallback",
-                  scrapedAt: now,
-                });
-                mergedCount++;
+          console.log(`[gate-rate-cap] Hybrid merge: scrape has ${scrapeCount} tokens, fetching API…`);
+          const [ratesResp, currResp, spotResp] = await Promise.allSettled([
+            fetch("https://api.gateio.ws/api/v4/earn/uni/rate",       { signal: AbortSignal.timeout(15_000) }).then(r => r.ok ? r.json() as Promise<Array<{ currency: string; est_rate: string }>> : []),
+            fetch("https://api.gateio.ws/api/v4/earn/uni/currencies",  { signal: AbortSignal.timeout(15_000) }).then(r => r.ok ? r.json() as Promise<Array<{ currency: string; available_lend_amount: string }>> : []),
+            fetch("https://api.gateio.ws/api/v4/spot/tickers",         { signal: AbortSignal.timeout(15_000) }).then(r => r.ok ? r.json() as Promise<Array<{ currency_pair: string; last: string }>> : []),
+          ]);
+
+          // Build liquidity and price maps
+          const availMap = new Map<string, number>();
+          if (currResp.status === "fulfilled") {
+            for (const item of currResp.value) {
+              const amt = parseFloat(item.available_lend_amount);
+              if (!isNaN(amt)) availMap.set(item.currency.toUpperCase(), amt);
+            }
+          }
+          const spotMap = new Map<string, number>();
+          if (spotResp.status === "fulfilled") {
+            for (const item of spotResp.value) {
+              if (item.currency_pair.endsWith("_USDT")) {
+                const base = item.currency_pair.replace("_USDT", "").toUpperCase();
+                spotMap.set(base, parseFloat(item.last || "0"));
               }
             }
-            console.log(`[gate-rate-cap] Hybrid merge added ${mergedCount} tokens (total ${data.size})`);
-          } else {
-            console.warn(`[gate-rate-cap] earn/uni/rate HTTP ${ratesResp.status} — no hybrid merge`);
           }
+
+          const rates = ratesResp.status === "fulfilled" ? ratesResp.value : [];
+          console.log(`[gate-rate-cap] earn/uni/rate: ${rates.length} tokens, earn/uni/currencies: ${availMap.size}, spot: ${spotMap.size}`);
+          const now = Date.now();
+          for (const item of rates) {
+            const token = item.currency.toUpperCase();
+            if (!data.has(token)) {
+              const liquidityTokenRaw = availMap.get(token) ?? null;
+              const spotPrice = spotMap.get(token) ?? 0;
+              const liquidityUsdtRaw = liquidityTokenRaw != null && spotPrice > 0 ? liquidityTokenRaw * spotPrice : null;
+              data.set(token, {
+                token,
+                borrowApr: parseFloat(item.est_rate) * VIP0_MULTIPLIER * 100,
+                liquidityTokenRaw,
+                liquidityUsdtRaw,
+                source: "api-fallback",
+                scrapedAt: now,
+              });
+              mergedCount++;
+            }
+          }
+          console.log(`[gate-rate-cap] Hybrid merge added ${mergedCount} tokens (total ${data.size})`);
+        
         } catch (err) {
           console.warn("[gate-rate-cap] Hybrid merge failed:", err instanceof Error ? err.message : err);
         }

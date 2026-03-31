@@ -73,6 +73,18 @@ export function parseAmount(raw: string): number | null {
 
 function parseBorrowApr(raw: string): number | null {
   if (!raw) return null;
+  // Cell format (Gate.io rate-cap table, VIP0 column):
+  //   "daily_rate%/token_annual%\nplatform_daily%/floor_annual%"
+  //   e.g. "0.000606%/5.30%\n0.000355%/3.10%"
+  // The actual VIP0 borrow rate = max(token_annual, floor_annual)
+  // = max of ALL "annual" values found in "X%/Y%" pairs within the cell.
+  let maxAnnual = -Infinity;
+  for (const m of raw.matchAll(/([\d.]+)%\/([\d.]+)%/g)) {
+    const annual = parseFloat(m[2]);
+    if (!isNaN(annual)) maxAnnual = Math.max(maxAnnual, annual);
+  }
+  if (maxAnnual > -Infinity) return maxAnnual;
+  // Fallback: plain "X.XX%" with no daily/annual split
   const parts = raw.trim().split("/");
   const annualPart = parts.length > 1 ? parts[parts.length - 1] : parts[0];
   const cleaned = annualPart.replace(/%/g, "").replace(/\s/g, "").replace(",", ".");
@@ -314,27 +326,14 @@ async function scrapeRateCap(): Promise<Map<string, GateRateCapEntry>> {
           if (cells.length < 3) continue;
           const allCells = cells.map((c) => (c as HTMLElement).innerText?.trim() ?? "");
           const pair = allCells[0] ?? "";
-          // Pick the cell with the HIGHEST "annual" % per row.
-          // Cells can be "3.10%" (plain) or "1.61%/589.19%" (daily/annual).
-          // We compare the LAST % segment (annual part) so that "1.61%/589.19%"
-          // competes with a plain "3.10%" as 589 > 3.10 and wins.
-          let maxRateVal = -1;
+          // Pick the FIRST % cell (= VIP0 rate column) — it appears before
+          // VIP1/VIP2 columns. The cell may hold two lines:
+          //   "daily_rate%/token_rate%\nplatform_daily%/floor_rate%"
+          // parseBorrowApr() will extract the max annual value from the cell.
           let rateCellText = "";
           let availCellText = "";
           for (const text of allCells) {
-            if (/%/.test(text) && text.length < 100) {
-              // Split by "/" and take the last segment's numeric value
-              const parts = text.split("/");
-              const lastPart = parts[parts.length - 1].trim();
-              const match = lastPart.match(/([\d,.]+)%/);
-              if (match) {
-                const val = parseFloat(match[1].replace(",", ""));
-                if (!isNaN(val) && val > maxRateVal) {
-                  maxRateVal = val;
-                  rateCellText = text;
-                }
-              }
-            }
+            if (!rateCellText && /%/.test(text) && text.length < 200) rateCellText = text;
             if (!availCellText && /≈/.test(text)) availCellText = text;
           }
           if (pair) result.push({

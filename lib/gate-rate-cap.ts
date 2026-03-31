@@ -405,22 +405,37 @@ async function scrapeRateCap(): Promise<Map<string, GateRateCapEntry>> {
     let lastFirstPair = "";
 
     while (pageNum <= MAX_PAGES) {
-      // Click the "→ next" button (last pagination item). Short timeout so we
-      // don't hang if the button disappears.
-      const clicked = await page
+      // Let any in-progress page transition fully settle before clicking
+      await page.waitForTimeout(500);
+
+      // Click the "→ next" button (last pagination item).
+      // Use a generous 20 s timeout — the proxy can be slow.
+      // Retry once on failure before giving up.
+      let clicked = await page
         .locator(PAGE_BTN_SEL)
         .last()
-        .click({ timeout: 5_000 })
+        .click({ timeout: 20_000 })
         .then(() => true)
         .catch(() => false);
 
       if (!clicked) {
-        console.log(`[gate-rate-cap] Next button not found at page ${pageNum - 1}, stopping`);
-        break;
+        // Wait a bit and try one more time before declaring end-of-pages
+        await page.waitForTimeout(3_000);
+        clicked = await page
+          .locator(PAGE_BTN_SEL)
+          .last()
+          .click({ timeout: 10_000 })
+          .then(() => true)
+          .catch(() => false);
+
+        if (!clicked) {
+          console.log(`[gate-rate-cap] Next button not found after retry at page ${pageNum - 1}, stopping`);
+          break;
+        }
       }
 
-      // Wait for the table to re-render
-      await page.waitForTimeout(1_500);
+      // Wait for the table to re-render (proxy latency can be high)
+      await page.waitForTimeout(2_500);
 
       const pageRows = await extractRows();
       const firstPair = pageRows[0]?.pair ?? "";

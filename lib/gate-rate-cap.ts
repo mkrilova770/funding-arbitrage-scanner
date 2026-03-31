@@ -42,8 +42,6 @@ interface Cache {
 
 let cache: Cache | null = null;
 let scrapeInProgress: Promise<Map<string, GateRateCapEntry>> | null = null;
-// Diagnostic: raw cells from first page (for debugging rate column detection)
-let debugFirstRows: Array<{ pair: string; cells: string[] }> = [];
 
 // VIP 0 page candidates (try each in order)
 const PAGE_URLS = [
@@ -316,7 +314,7 @@ async function scrapeRateCap(): Promise<Map<string, GateRateCapEntry>> {
     await page.waitForTimeout(2_000);
 
     // ── Row extractor (runs inside browser context) ───────────────────────────
-    type ScrapedRow = { pair: string; rateCellText: string; availCellText: string; allCells?: string[] };
+    type ScrapedRow = { pair: string; rateCellText: string; availCellText: string };
     const extractRows = async (): Promise<ScrapedRow[]> =>
       page.evaluate((selector: string): ScrapedRow[] => {
         const allRows = document.querySelectorAll(selector);
@@ -336,13 +334,7 @@ async function scrapeRateCap(): Promise<Map<string, GateRateCapEntry>> {
             if (!rateCellText && /%/.test(text) && text.length < 200) rateCellText = text;
             if (!availCellText && /≈/.test(text)) availCellText = text;
           }
-          if (pair) result.push({
-            pair,
-            rateCellText,
-            availCellText,
-            // Only include allCells for the first 3 rows (diagnostic only)
-            ...(result.length < 3 ? { allCells } : {}),
-          });
+          if (pair) result.push({ pair, rateCellText, availCellText });
         }
         return result;
       }, foundSelector);
@@ -387,10 +379,6 @@ async function scrapeRateCap(): Promise<Map<string, GateRateCapEntry>> {
     console.log(`[gate-rate-cap] Page 1: ${page1Rows.length} rows`);
     if (page1Rows.length > 0) {
       console.log("[gate-rate-cap] First row sample:", JSON.stringify(page1Rows[0]));
-      // Capture raw cells for debugging rate column detection
-      debugFirstRows = page1Rows
-        .filter((r) => r.allCells && r.allCells.length > 0)
-        .map((r) => ({ pair: r.pair, cells: r.allCells! }));
     }
     parseRows(page1Rows);
 
@@ -570,7 +558,6 @@ export function getRateCapCacheInfo(): {
   source: string | null;
   scrapeCount: number;
   mergedCount: number;
-  debugFirstRows: Array<{ pair: string; cells: string[] }>;
 } {
   return {
     size: cache?.data.size ?? 0,
@@ -579,6 +566,5 @@ export function getRateCapCacheInfo(): {
     source: cache?.source ?? null,
     scrapeCount: cache?.scrapeCount ?? 0,
     mergedCount: cache?.mergedCount ?? 0,
-    debugFirstRows,
   };
 }

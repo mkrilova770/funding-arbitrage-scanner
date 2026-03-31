@@ -312,18 +312,21 @@ async function scrapeRateCap(): Promise<Map<string, GateRateCapEntry>> {
           if (cells.length < 3) continue;
           const allCells = cells.map((c) => (c as HTMLElement).innerText?.trim() ?? "");
           const pair = allCells[0] ?? "";
-          // Pick the cell with the HIGHEST % value per row — this is the borrow
-          // rate cap (e.g. 589% for SKL). A "base fee" column also has a % but
-          // its value (e.g. 3.10%) is lower than the actual VIP0 rate cap.
+          // Pick the cell with the HIGHEST "annual" % per row.
+          // Cells can be "3.10%" (plain) or "1.61%/589.19%" (daily/annual).
+          // We compare the LAST % segment (annual part) so that "1.61%/589.19%"
+          // competes with a plain "3.10%" as 589 > 3.10 and wins.
           let maxRateVal = -1;
           let rateCellText = "";
           let availCellText = "";
           for (const text of allCells) {
             if (/%/.test(text) && text.length < 100) {
-              // Extract first number from the text (handles "3.10%/day" → 3.10)
-              const match = text.match(/[\d,.]+/);
+              // Split by "/" and take the last segment's numeric value
+              const parts = text.split("/");
+              const lastPart = parts[parts.length - 1].trim();
+              const match = lastPart.match(/([\d,.]+)%/);
               if (match) {
-                const val = parseFloat(match[0].replace(",", "."));
+                const val = parseFloat(match[1].replace(",", ""));
                 if (!isNaN(val) && val > maxRateVal) {
                   maxRateVal = val;
                   rateCellText = text;

@@ -364,36 +364,46 @@ async function scrapeRateCap(): Promise<Map<string, GateRateCapEntry>> {
     }
     parseRows(page1Rows);
 
-    // ── Remaining pages — click "→ next" arrow, detect last page by disabled ──
-    // Mantine GatePagination: last button = "→ next", disabled on final page.
-    // Use .last() locator (lazy, always fresh) to avoid stale element refs.
+    // ── Remaining pages — click "→ next" arrow until it is disabled ─────────
+    // Do NOT rely on totalPages detection: Gate's pagination bar shows a
+    // truncated set of numbers (e.g. "1 2 3 … 27") that may not reflect the
+    // real last page (e.g. 69). Instead just keep clicking until disabled.
     const PAGE_BTN_SEL = ".mantine-GatePagination-item, .mantine-Pagination-item";
-    const MAX_PAGES = 200;
+    const MAX_PAGES = 300;
     let pageNum = 2;
+    let consecutiveEmpty = 0;
 
-    // Detect total pages (highest number visible in pagination, e.g. "69")
-    const getHighestPageBtn = async (): Promise<number> => {
-      const texts = await page.locator(PAGE_BTN_SEL).allInnerTexts().catch(() => [] as string[]);
-      const nums = texts.map(t => parseInt(t.trim(), 10)).filter(n => !isNaN(n));
-      return nums.length > 0 ? Math.max(...nums) : 1;
-    };
-    const totalPages = await getHighestPageBtn();
-    console.log(`[gate-rate-cap] Total pages detected: ${totalPages}`);
-
-    while (pageNum <= Math.min(totalPages, MAX_PAGES)) {
-      // Re-evaluate next-arrow every iteration (fresh locator, no stale handles)
+    while (pageNum <= MAX_PAGES) {
+      // Fresh locator each iteration — avoids stale element handles.
       const nextArrow = page.locator(PAGE_BTN_SEL).last();
 
-      // Check disabled AFTER a brief settle (avoids transient disabled during render)
-      await page.waitForTimeout(300);
-      const isDisabled = await nextArrow.getAttribute("disabled").catch(() => "disabled");
+      // Wait briefly for any post-render state changes, then read disabled flag.
+      await page.waitForTimeout(400);
+
+      let isDisabled: string | null = null;
+      try {
+        isDisabled = await nextArrow.getAttribute("disabled");
+        // Also check data-disabled (Mantine v7+) and aria-disabled
+        if (isDisabled === null) {
+          const dataDisabled = await nextArrow.getAttribute("data-disabled").catch(() => null);
+          const ariaDisabled = await nextArrow.getAttribute("aria-disabled").catch(() => null);
+          if (dataDisabled === "true" || ariaDisabled === "true") isDisabled = "true";
+        }
+      } catch {
+        isDisabled = "error";
+      }
       if (isDisabled !== null) break;
 
       await nextArrow.click();
       await page.waitForTimeout(1_500);
 
       const pageRows = await extractRows();
-      if (pageRows.length === 0) break;
+      if (pageRows.length === 0) {
+        consecutiveEmpty++;
+        if (consecutiveEmpty >= 3) break; // 3 empty pages in a row → done
+        continue;
+      }
+      consecutiveEmpty = 0;
       parseRows(pageRows);
       pageNum++;
     }

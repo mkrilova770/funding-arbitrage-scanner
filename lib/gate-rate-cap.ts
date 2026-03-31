@@ -364,54 +364,56 @@ async function scrapeRateCap(): Promise<Map<string, GateRateCapEntry>> {
     }
     parseRows(page1Rows);
 
-    // ── Remaining pages — click "→ next" until disabled ─────────────────────
-    // Simple loop: get "disabled" HTML attribute on the last pagination button.
-    // On the last page Gate/Mantine sets the disabled attribute on that button.
-    // We do NOT rely on totalPages (the visible page numbers are truncated and
-    // may not reflect the actual last page).
+    // ── Remaining pages ───────────────────────────────────────────────────────
+    // Strategy: click the last pagination button and check if the TABLE
+    // CONTENT changed. We intentionally do NOT check the disabled/data-disabled
+    // attribute because Mantine sets these transitionally (during loading),
+    // causing false "last page" detection. Instead we stop only when:
+    //   a) the click itself fails (button gone from DOM)
+    //   b) the first row pair is the same as the previous page for 2+ iterations
+    //   c) we get 0 rows
+    //   d) MAX_PAGES guard
     const PAGE_BTN_SEL = ".mantine-GatePagination-item, .mantine-Pagination-item";
     const MAX_PAGES = 300;
     let pageNum = 2;
-    let consecutiveEmpty = 0;
+    let consecutiveUnchanged = 0;
     let lastFirstPair = "";
 
     while (pageNum <= MAX_PAGES) {
-      await page.waitForTimeout(400);
+      // Click the "→ next" button (last pagination item). Short timeout so we
+      // don't hang if the button disappears.
+      const clicked = await page
+        .locator(PAGE_BTN_SEL)
+        .last()
+        .click({ timeout: 5_000 })
+        .then(() => true)
+        .catch(() => false);
 
-      // Read "disabled" attribute — returns "" or value if present, null if absent.
-      // Also log button texts on first few pages for diagnostics.
-      const nextBtn = page.locator(PAGE_BTN_SEL).last();
-      const disabledAttr = await nextBtn.getAttribute("disabled").catch(() => "err");
-
-      if (pageNum <= 3) {
-        const allTexts = await page.locator(PAGE_BTN_SEL).allInnerTexts().catch(() => [] as string[]);
-        console.log(`[gate-rate-cap] Page ${pageNum - 1} pagination buttons: ${JSON.stringify(allTexts)}`);
-      }
-
-      if (disabledAttr !== null) {
-        console.log(`[gate-rate-cap] Next button disabled at page ${pageNum - 1} (attr="${disabledAttr}")`);
+      if (!clicked) {
+        console.log(`[gate-rate-cap] Next button not found at page ${pageNum - 1}, stopping`);
         break;
       }
 
-      await nextBtn.click().catch(() => null);
+      // Wait for the table to re-render
       await page.waitForTimeout(1_500);
 
       const pageRows = await extractRows();
-
-      // Detect stuck pagination: same first row as previous page → already on last page
       const firstPair = pageRows[0]?.pair ?? "";
+
+      // If the first row hasn't changed the page didn't advance → last page
       if (firstPair && firstPair === lastFirstPair) {
-        consecutiveEmpty++;
-        if (consecutiveEmpty >= 2) {
-          console.log(`[gate-rate-cap] Pagination stuck at page ${pageNum - 1}, stopping`);
+        consecutiveUnchanged++;
+        if (consecutiveUnchanged >= 2) {
+          console.log(`[gate-rate-cap] Pagination unchanged × 2 at page ${pageNum - 1}, stopping`);
           break;
         }
         continue;
       }
-      consecutiveEmpty = 0;
-      lastFirstPair = firstPair;
 
       if (pageRows.length === 0) break;
+
+      consecutiveUnchanged = 0;
+      lastFirstPair = firstPair;
       parseRows(pageRows);
       pageNum++;
     }

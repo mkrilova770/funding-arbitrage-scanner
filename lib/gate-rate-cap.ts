@@ -36,6 +36,8 @@ interface Cache {
   data: Map<string, GateRateCapEntry>;
   fetchedAt: number;
   source: "scrape" | "api-fallback";
+  scrapeCount: number;   // tokens from Playwright
+  mergedCount: number;   // tokens added from API fallback
 }
 
 let cache: Cache | null = null;
@@ -430,26 +432,6 @@ async function scrapeRateCap(): Promise<Map<string, GateRateCapEntry>> {
     return apiFallbackWithBorrowable();
   }
 
-  // ── Hybrid merge: fill in tokens NOT found on the rate-cap page ───────────
-  // Some tokens exist in earn/uni/currencies (API fallback) but not on the
-  // rate-cap page (or were missed by pagination). Merge them so that no data
-  // disappears compared to the pre-Playwright API-only state.
-  try {
-    const apiData = await fetchFallback();
-    let added = 0;
-    for (const [token, entry] of apiData.entries()) {
-      if (!result.has(token)) {
-        result.set(token, entry);
-        added++;
-      }
-    }
-    if (added > 0) {
-      console.log(`[gate-rate-cap] Hybrid merge: added ${added} tokens from API fallback (not on rate-cap page)`);
-    }
-  } catch (err) {
-    console.warn("[gate-rate-cap] Hybrid merge fallback failed:", err);
-  }
-
   return result;
 }
 
@@ -492,9 +474,47 @@ export async function getGateRateCap(): Promise<Map<string, GateRateCapEntry>> {
 
   if (!scrapeInProgress) {
     scrapeInProgress = scrapeRateCap()
-      .then((data) => {
-        const src = [...data.values()][0]?.source ?? "api-fallback";
-        cache = { data, fetchedAt: Date.now(), source: src };
+      .then(async (data) => {
+        const scrapeCount = data.size;
+
+        // ── Hybrid merge ────────────────────────────────────────────────────
+        // Fill tokens missing from the rate-cap page using earn/uni/rate.
+        // Done HERE (not inside scrapeRateCap) so it runs in a clean async
+        // context after the Playwright browser is fully closed.
+        let mergedCount = 0;
+        try {
+          console.log(`[gate-rate-cap] Hybrid merge: scrape has ${scrapeCount} tokens, fetching earn/uni/rate…`);
+          const ratesResp = await fetch("https://api.gateio.ws/api/v4/earn/uni/rate", {
+            signal: AbortSignal.timeout(15_000),
+          });
+          if (ratesResp.ok) {
+            const rates: Array<{ currency: string; est_rate: string }> = await ratesResp.json();
+            console.log(`[gate-rate-cap] earn/uni/rate returned ${rates.length} tokens`);
+            const now = Date.now();
+            for (const item of rates) {
+              const token = item.currency.toUpperCase();
+              if (!data.has(token)) {
+                data.set(token, {
+                  token,
+                  borrowApr: parseFloat(item.est_rate) * VIP0_MULTIPLIER * 100,
+                  liquidityTokenRaw: null,
+                  liquidityUsdtRaw: null,
+                  source: "api-fallback",
+                  scrapedAt: now,
+                });
+                mergedCount++;
+              }
+            }
+            console.log(`[gate-rate-cap] Hybrid merge added ${mergedCount} tokens (total ${data.size})`);
+          } else {
+            console.warn(`[gate-rate-cap] earn/uni/rate HTTP ${ratesResp.status} — no hybrid merge`);
+          }
+        } catch (err) {
+          console.warn("[gate-rate-cap] Hybrid merge failed:", err instanceof Error ? err.message : err);
+        }
+
+        const src = scrapeCount > 0 ? "scrape" : "api-fallback";
+        cache = { data, fetchedAt: Date.now(), source: src, scrapeCount, mergedCount };
         scrapeInProgress = null;
         return data;
       })
@@ -503,7 +523,7 @@ export async function getGateRateCap(): Promise<Map<string, GateRateCapEntry>> {
         scrapeInProgress = null;
         try {
           const fallback = await apiFallbackWithBorrowable();
-          cache = { data: fallback, fetchedAt: Date.now(), source: "api-fallback" };
+          cache = { data: fallback, fetchedAt: Date.now(), source: "api-fallback", scrapeCount: 0, mergedCount: fallback.size };
           return fallback;
         } catch (fallbackErr) {
           console.error("[gate-rate-cap] Fallback also failed:", fallbackErr);
@@ -520,11 +540,15 @@ export function getRateCapCacheInfo(): {
   fetchedAt: number | null;
   ageMs: number | null;
   source: string | null;
+  scrapeCount: number;
+  mergedCount: number;
 } {
   return {
     size: cache?.data.size ?? 0,
     fetchedAt: cache?.fetchedAt ?? null,
     ageMs: cache ? Date.now() - cache.fetchedAt : null,
     source: cache?.source ?? null,
+    scrapeCount: cache?.scrapeCount ?? 0,
+    mergedCount: cache?.mergedCount ?? 0,
   };
 }

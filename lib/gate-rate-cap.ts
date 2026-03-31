@@ -324,16 +324,20 @@ async function scrapeRateCap(): Promise<Map<string, GateRateCapEntry>> {
           if (cells.length < 3) continue;
           const allCells = cells.map((c) => (c as HTMLElement).innerText?.trim() ?? "");
           const pair = allCells[0] ?? "";
-          // Column layout (fixed):
+          // Column layout:
           //  [0] pair  [1] leverage  [2] assets  [3] availability  [4+] VIP rate cols
-          // Use index 3 directly for availability (never search by ≈ — some tokens
-          // have zero liquidity and show "—" or omit the ≈ USDT line entirely).
-          // Pick the FIRST % cell for the VIP0 borrow rate (VIP1/VIP2 come after).
+          // Pick the FIRST % cell for VIP0 rate (VIP1/VIP2 come after).
+          // For availability: prefer a cell containing ≈ (has USDT equivalent);
+          // fall back to column 3 directly for rows where no ≈ is present
+          // (zero-liquidity rows or rows that omit the USDT conversion).
           let rateCellText = "";
+          let availCellText = "";
           for (const text of allCells) {
             if (!rateCellText && /%/.test(text) && text.length < 200) rateCellText = text;
+            if (!availCellText && /≈/.test(text)) availCellText = text;
           }
-          const availCellText = allCells[3] ?? "";
+          // Fallback: column 3 is always the availability column
+          if (!availCellText && allCells.length > 3) availCellText = allCells[3];
           if (pair) result.push({ pair, rateCellText, availCellText });
         }
         return result;

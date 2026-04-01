@@ -498,14 +498,13 @@ export async function getGateRateCap(): Promise<Map<string, GateRateCapEntry>> {
   }
 
   if (!scrapeInProgress) {
-    scrapeInProgress = (process.env.GATE_API_KEY && process.env.GATE_API_SECRET
-      ? apiFallbackWithBorrowable()
-      : scrapeRateCap())
+    // Keep scraper as primary source for real market pool availability.
+    // /margin/uni/borrowable is account-dependent and may return 0 for empty accounts.
+    scrapeInProgress = scrapeRateCap()
       .then(async (data) => {
-        const hasApiKeys = Boolean(process.env.GATE_API_KEY && process.env.GATE_API_SECRET);
-        const scrapeCount = hasApiKeys ? 0 : data.size;
-        const mergedCount = hasApiKeys ? data.size : 0;
-        const src: "scrape" | "api-fallback" = hasApiKeys ? "api-fallback" : "scrape";
+        const scrapeCount = data.size;
+        const mergedCount = 0;
+        const src: "scrape" | "api-fallback" = "scrape";
         cache = { data, fetchedAt: Date.now(), source: src, scrapeCount, mergedCount };
         scrapeInProgress = null;
         return data;
@@ -514,13 +513,11 @@ export async function getGateRateCap(): Promise<Map<string, GateRateCapEntry>> {
         console.error("[gate-rate-cap] Primary source failed, trying fallback:", err?.message ?? err);
         scrapeInProgress = null;
         try {
-          // If API-first path failed, fallback to scraper.
-          // If scraper path failed, fallback to API.
-          const hasApiKeys = Boolean(process.env.GATE_API_KEY && process.env.GATE_API_SECRET);
-          const fallback = hasApiKeys ? await scrapeRateCap() : await apiFallbackWithBorrowable();
-          const src: "scrape" | "api-fallback" = hasApiKeys ? "scrape" : "api-fallback";
-          const scrapeCount = src === "scrape" ? fallback.size : 0;
-          const mergedCount = src === "api-fallback" ? fallback.size : 0;
+          // Fallback to API data when scraper fails.
+          const fallback = await apiFallbackWithBorrowable();
+          const src: "scrape" | "api-fallback" = "api-fallback";
+          const scrapeCount = 0;
+          const mergedCount = fallback.size;
           cache = { data: fallback, fetchedAt: Date.now(), source: src, scrapeCount, mergedCount };
           return fallback;
         } catch (fallbackErr) {

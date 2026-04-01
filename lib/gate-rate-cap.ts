@@ -32,6 +32,7 @@ export interface GateRateCapEntry {
 const CACHE_TTL_MS = 30 * 60 * 1000; // 30 min — scraping all pages is expensive
 const MIN_ACCEPTED_SCRAPE_TOKENS = 500; // reject obviously partial runs
 const MIN_ACCEPTED_SCRAPE_RATIO = 0.8;  // reject if new scrape << previous good scrape
+const COLD_START_SCRAPE_RETRIES = 2;    // extra attempts when cache is empty
 
 interface Cache {
   data: Map<string, GateRateCapEntry>;
@@ -458,6 +459,28 @@ async function scrapeRateCap(): Promise<Map<string, GateRateCapEntry>> {
   return result;
 }
 
+async function scrapeRateCapBestOfN(attempts: number): Promise<Map<string, GateRateCapEntry>> {
+  let best = new Map<string, GateRateCapEntry>();
+  let bestAttempt = 0;
+  for (let i = 1; i <= attempts; i++) {
+    try {
+      const data = await scrapeRateCap();
+      if (data.size > best.size) {
+        best = data;
+        bestAttempt = i;
+      }
+      // Good enough: stop early
+      if (data.size >= MIN_ACCEPTED_SCRAPE_TOKENS) break;
+      // Small pause before retry to avoid hitting same transient state
+      if (i < attempts) await new Promise((r) => setTimeout(r, 1500));
+    } catch (err) {
+      console.warn(`[gate-rate-cap] Scrape attempt ${i}/${attempts} failed:`, err);
+    }
+  }
+  console.log(`[gate-rate-cap] Best scrape from attempt ${bestAttempt}/${attempts}: ${best.size} tokens`);
+  return best;
+}
+
 // ── Combined fallback: rate API + optional borrowable API ────────────────────
 
 async function apiFallbackWithBorrowable(): Promise<Map<string, GateRateCapEntry>> {
@@ -502,7 +525,8 @@ export async function getGateRateCap(): Promise<Map<string, GateRateCapEntry>> {
   if (!scrapeInProgress) {
     // Keep scraper as primary source for real market pool availability.
     // /margin/uni/borrowable is account-dependent and may return 0 for empty accounts.
-    scrapeInProgress = scrapeRateCap()
+    const attempts = cache ? 1 : 1 + COLD_START_SCRAPE_RETRIES;
+    scrapeInProgress = scrapeRateCapBestOfN(attempts)
       .then(async (data) => {
         // Keep previous good scrape if the new run is clearly partial.
         const prev = cache;

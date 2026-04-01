@@ -131,8 +131,8 @@ async function fetchFallback(): Promise<Map<string, GateRateCapEntry>> {
         borrowApr,
         // Public APIs do not expose real-time borrowable pool amounts.
         // These are overlaid from authenticated /margin/uni/borrowable.
-        liquidityTokenRaw: null,
-        liquidityUsdtRaw: null,
+        liquidityTokenRaw: 0,
+        liquidityUsdtRaw: 0,
         source: "api-fallback",
         scrapedAt: now,
       });
@@ -561,8 +561,26 @@ export async function getGateRateCap(): Promise<Map<string, GateRateCapEntry>> {
           }
         }
 
+        // Always merge missing tokens from API fallback so unknown tokens never
+        // disappear from the map (at minimum they get APR + zero liquidity).
+        let mergedFromApi = 0;
+        try {
+          const apiData = await apiFallbackWithBorrowable();
+          for (const [token, entry] of apiData.entries()) {
+            if (!data.has(token)) {
+              data.set(token, entry);
+              mergedFromApi++;
+            }
+          }
+          if (mergedFromApi > 0) {
+            console.log(`[gate-rate-cap] Merged ${mergedFromApi} tokens from API fallback`);
+          }
+        } catch (err) {
+          console.warn("[gate-rate-cap] API merge failed:", err);
+        }
+
         const scrapeCount = newScrapeCount;
-        const mergedCount = 0;
+        const mergedCount = mergedFromPrev + mergedFromApi;
         const src: "scrape" | "api-fallback" = "scrape";
         cache = { data, fetchedAt: Date.now(), source: src, scrapeCount, mergedCount };
         scrapeInProgress = null;

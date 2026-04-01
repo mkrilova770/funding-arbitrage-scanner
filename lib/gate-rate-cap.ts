@@ -30,6 +30,8 @@ export interface GateRateCapEntry {
 // ── Cache ────────────────────────────────────────────────────────────────────
 
 const CACHE_TTL_MS = 30 * 60 * 1000; // 30 min — scraping all pages is expensive
+const MIN_ACCEPTED_SCRAPE_TOKENS = 500; // reject obviously partial runs
+const MIN_ACCEPTED_SCRAPE_RATIO = 0.8;  // reject if new scrape << previous good scrape
 
 interface Cache {
   data: Map<string, GateRateCapEntry>;
@@ -502,7 +504,40 @@ export async function getGateRateCap(): Promise<Map<string, GateRateCapEntry>> {
     // /margin/uni/borrowable is account-dependent and may return 0 for empty accounts.
     scrapeInProgress = scrapeRateCap()
       .then(async (data) => {
-        const scrapeCount = data.size;
+        // Keep previous good scrape if the new run is clearly partial.
+        const prev = cache;
+        const prevScrapeCount = prev?.source === "scrape" ? prev.scrapeCount : 0;
+        const newScrapeCount = data.size;
+        const ratioVsPrev = prevScrapeCount > 0 ? newScrapeCount / prevScrapeCount : 1;
+        const isClearlyPartial =
+          newScrapeCount < MIN_ACCEPTED_SCRAPE_TOKENS &&
+          prevScrapeCount > 0 &&
+          ratioVsPrev < MIN_ACCEPTED_SCRAPE_RATIO;
+
+        if (isClearlyPartial && prev) {
+          console.warn(
+            `[gate-rate-cap] Partial scrape rejected: new=${newScrapeCount}, prev=${prevScrapeCount}, ratio=${ratioVsPrev.toFixed(2)}; keeping previous cache`
+          );
+          scrapeInProgress = null;
+          return prev.data;
+        }
+
+        // Merge previously scraped tokens not present in this run.
+        // This prevents temporary page/scroll failures from turning rows into "—".
+        let mergedFromPrev = 0;
+        if (prev?.source === "scrape") {
+          for (const [token, oldEntry] of prev.data.entries()) {
+            if (!data.has(token)) {
+              data.set(token, oldEntry);
+              mergedFromPrev++;
+            }
+          }
+          if (mergedFromPrev > 0) {
+            console.log(`[gate-rate-cap] Merged ${mergedFromPrev} tokens from previous cache`);
+          }
+        }
+
+        const scrapeCount = newScrapeCount;
         const mergedCount = 0;
         const src: "scrape" | "api-fallback" = "scrape";
         cache = { data, fetchedAt: Date.now(), source: src, scrapeCount, mergedCount };

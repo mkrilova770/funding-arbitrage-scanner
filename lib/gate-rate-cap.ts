@@ -466,6 +466,9 @@ async function apiFallbackWithBorrowable(): Promise<Map<string, GateRateCapEntry
     try {
       const tokens = [...base.keys()];
       const borrowable = await fetchBorrowableViaApi(tokens);
+      if (borrowable.size === 0) {
+        throw new Error("Borrowable API returned 0 tokens (missing permissions or IP restriction)");
+      }
       for (const [token, liq] of borrowable.entries()) {
         const entry = base.get(token);
         if (entry) {
@@ -507,11 +510,17 @@ export async function getGateRateCap(): Promise<Map<string, GateRateCapEntry>> {
         return data;
       })
       .catch(async (err) => {
-        console.error("[gate-rate-cap] Scrape error, using fallback:", err?.message ?? err);
+        console.error("[gate-rate-cap] Primary source failed, trying fallback:", err?.message ?? err);
         scrapeInProgress = null;
         try {
-          const fallback = await apiFallbackWithBorrowable();
-          cache = { data: fallback, fetchedAt: Date.now(), source: "api-fallback", scrapeCount: 0, mergedCount: fallback.size };
+          // If API-first path failed, fallback to scraper.
+          // If scraper path failed, fallback to API.
+          const hasApiKeys = Boolean(process.env.GATE_API_KEY && process.env.GATE_API_SECRET);
+          const fallback = hasApiKeys ? await scrapeRateCap() : await apiFallbackWithBorrowable();
+          const src: "scrape" | "api-fallback" = hasApiKeys ? "scrape" : "api-fallback";
+          const scrapeCount = src === "scrape" ? fallback.size : 0;
+          const mergedCount = src === "api-fallback" ? fallback.size : 0;
+          cache = { data: fallback, fetchedAt: Date.now(), source: src, scrapeCount, mergedCount };
           return fallback;
         } catch (fallbackErr) {
           console.error("[gate-rate-cap] Fallback also failed:", fallbackErr);

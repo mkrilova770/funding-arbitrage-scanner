@@ -118,6 +118,21 @@ function SortIcon({ active, dir }: { active: boolean; dir: SortDir }) {
 
 // ── Grouping helpers ─────────────────────────────────────────────────────────
 
+/**
+ * Row shown in the collapsed group header: exchange with the largest funding APR
+ * magnitude (|fundingAPR|). Tie-break: higher algebraic fundingAPR.
+ * Expanded sub-rows stay sorted by net APR (best net first).
+ */
+function pickGroupLeadRow(opps: ArbitrageRow[]): ArbitrageRow {
+  return opps.reduce((a, b) => {
+    const absA = Math.abs(a.fundingAPR);
+    const absB = Math.abs(b.fundingAPR);
+    if (absB > absA) return b;
+    if (absB < absA) return a;
+    return b.fundingAPR > a.fundingAPR ? b : a;
+  });
+}
+
 function buildGroups(rows: ArbitrageRow[]): TokenGroup[] {
   const map = new Map<string, ArbitrageRow[]>();
   for (const row of rows) {
@@ -134,7 +149,7 @@ function buildGroups(rows: ArbitrageRow[]): TokenGroup[] {
     groups.push({
       token,
       opportunities: sorted,
-      best: sorted[0],
+      best: pickGroupLeadRow(opps),
       worst: sorted[sorted.length - 1],
       exchangeCount: sorted.length,
     });
@@ -146,17 +161,19 @@ function sortGroups(groups: TokenGroup[], key: GroupSortKey, dir: SortDir): Toke
   return [...groups].sort((a, b) => {
     let av: number | string;
     let bv: number | string;
+    // opportunities[0] = best Net APR within group; best = lead row (max |Funding APR|)
+    const bestNet = (g: TokenGroup) => g.opportunities[0];
     switch (key) {
       case "token":         av = a.token;                 bv = b.token;                 break;
       case "rawFunding":    av = a.best.rawFunding;       bv = b.best.rawFunding;       break;
-      case "netAPR":        av = a.best.netAPR;           bv = b.best.netAPR;           break;
+      case "netAPR":        av = bestNet(a).netAPR;       bv = bestNet(b).netAPR;       break;
       case "fundingAPR":    av = a.best.fundingAPR;       bv = b.best.fundingAPR;       break;
       case "borrowAPR":     av = a.best.borrowAPR;        bv = b.best.borrowAPR;        break;
       case "spread":        av = a.best.spread;           bv = b.best.spread;           break;
       case "exchangeCount": av = a.exchangeCount;         bv = b.exchangeCount;         break;
       case "nextFundingTime":  av = a.best.nextFundingTime || 0;        bv = b.best.nextFundingTime || 0;        break;
       case "borrowLiquidity":  av = a.best.borrowLiquidityUsdt ?? -1;   bv = b.best.borrowLiquidityUsdt ?? -1;   break;
-      default:                 av = a.best.netAPR;                       bv = b.best.netAPR;
+      default:                 av = bestNet(a).netAPR;                  bv = bestNet(b).netAPR;
     }
     if (typeof av === "string" && typeof bv === "string") {
       return dir === "asc" ? av.localeCompare(bv) : bv.localeCompare(av);
@@ -213,8 +230,11 @@ function GroupedTable({
             Token
             <SortIcon active={sortKey === "token"} dir={sortDir} />
           </th>
-          {/* Best Exchange — not sortable */}
-          <th className="px-3 py-3 text-gray-400 font-medium whitespace-nowrap">
+          {/* Lead exchange — not sortable (largest |Funding APR| in group) */}
+          <th
+            className="px-3 py-3 text-gray-400 font-medium whitespace-nowrap"
+            title="Exchange with the largest Funding APR magnitude in this token group"
+          >
             Best Exchange
           </th>
           {/* Raw Funding — sortable */}

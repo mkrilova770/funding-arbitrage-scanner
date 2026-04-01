@@ -1,12 +1,11 @@
 /**
  * Gate isolated margin rate cap data.
  *
- * PRIMARY: Playwright scraper on the Gate rate-cap page (real VIP 0 borrow APR
- *          and actual available pool liquidity).
- * AUTH FALLBACK: Gate API key + /margin/uni/borrowable (requires GATE_API_KEY /
- *          GATE_API_SECRET in .env.local). Returns real pool available amounts.
- * RATE FALLBACK: earn/uni/rate API with the correct VIP 0 service-fee multiplier
- *          (~1.686×) derived from real page observation. No liquidity data.
+ * PRIMARY: Gate API key + /margin/uni/borrowable (requires GATE_API_KEY /
+ *          GATE_API_SECRET in .env.local). Fast and stable.
+ * API FALLBACK: earn/uni/rate API for APR (plus spot tickers for USDT conversion
+ *          when borrowable is available).
+ * LAST RESORT: Playwright scraper on the Gate rate-cap page.
  *
  * Playwright geo-block fix: set PLAYWRIGHT_PROXY_SERVER=socks5://host:port
  * (optionally PLAYWRIGHT_PROXY_USER / PLAYWRIGHT_PROXY_PASS) in .env.local.
@@ -94,11 +93,6 @@ function parseBorrowApr(raw: string): number | null {
 // ── API fallback ─────────────────────────────────────────────────────────────
 
 interface GateUniRate { currency: string; est_rate: string; }
-interface GateUniCurrency {
-  currency: string;
-  available_lend_amount: string; // currently available in pool (native token units)
-  max_lend_amount: string;
-}
 interface GateSpotTickerFallback { currency_pair: string; last: string; }
 
 async function fetchFallback(): Promise<Map<string, GateRateCapEntry>> {
@@ -106,23 +100,12 @@ async function fetchFallback(): Promise<Map<string, GateRateCapEntry>> {
   const now = Date.now();
   const result = new Map<string, GateRateCapEntry>();
 
-  const [ratesRes, currRes, spotRes] = await Promise.allSettled([
+  const [ratesRes, spotRes] = await Promise.allSettled([
     fetch("https://api.gateio.ws/api/v4/earn/uni/rate", { signal: AbortSignal.timeout(15_000) })
       .then((r) => r.ok ? (r.json() as Promise<GateUniRate[]>) : ([] as GateUniRate[])),
-    fetch("https://api.gateio.ws/api/v4/earn/uni/currencies", { signal: AbortSignal.timeout(15_000) })
-      .then((r) => r.ok ? (r.json() as Promise<GateUniCurrency[]>) : ([] as GateUniCurrency[])),
     fetch("https://api.gateio.ws/api/v4/spot/tickers", { signal: AbortSignal.timeout(15_000) })
       .then((r) => r.ok ? (r.json() as Promise<GateSpotTickerFallback[]>) : ([] as GateSpotTickerFallback[])),
   ]);
-
-  // available_lend_amount = currently available in the lending pool (native token units)
-  const availMap = new Map<string, number>();
-  if (currRes.status === "fulfilled") {
-    for (const item of currRes.value) {
-      const v = parseFloat(item.available_lend_amount || "0");
-      if (v > 0) availMap.set(item.currency.toUpperCase(), v);
-    }
-  }
 
   // spot prices for converting native token → USDT
   const spotMap = new Map<string, number>();
@@ -140,17 +123,13 @@ async function fetchFallback(): Promise<Map<string, GateRateCapEntry>> {
     for (const item of ratesRes.value) {
       const upper = item.currency.toUpperCase();
       const borrowApr = parseFloat(item.est_rate) * VIP0_MULTIPLIER * 100;
-      const liquidityTokenRaw = availMap.get(upper) ?? null;
-      const spotPrice = spotMap.get(upper) ?? 0;
-      const liquidityUsdtRaw =
-        liquidityTokenRaw != null && spotPrice > 0
-          ? liquidityTokenRaw * spotPrice
-          : null;
       result.set(upper, {
         token: upper,
         borrowApr,
-        liquidityTokenRaw,
-        liquidityUsdtRaw,
+        // Public APIs do not expose real-time borrowable pool amounts.
+        // These are overlaid from authenticated /margin/uni/borrowable.
+        liquidityTokenRaw: null,
+        liquidityUsdtRaw: null,
         source: "api-fallback",
         scrapedAt: now,
       });
@@ -219,7 +198,7 @@ async function fetchBorrowableViaApi(
           if (!res.ok) return;
           const data: { currency: string; borrowable: string } = await res.json();
           const borrowableTokens = parseFloat(data.borrowable || "0");
-          if (isNaN(borrowableTokens) || borrowableTokens <= 0) return;
+          if (isNaN(borrowableTokens)) return;
           const spotPrice = spotMap.get(upper) ?? 0;
           result.set(upper, {
             liquidityTokenRaw: borrowableTokens,
@@ -515,68 +494,14 @@ export async function getGateRateCap(): Promise<Map<string, GateRateCapEntry>> {
   }
 
   if (!scrapeInProgress) {
-    scrapeInProgress = scrapeRateCap()
+    scrapeInProgress = (process.env.GATE_API_KEY && process.env.GATE_API_SECRET
+      ? apiFallbackWithBorrowable()
+      : scrapeRateCap())
       .then(async (data) => {
-        const scrapeCount = data.size;
-
-        // ── Hybrid merge ────────────────────────────────────────────────────
-        // Fill tokens missing from the rate-cap page using earn/uni/rate (APR)
-        // and earn/uni/currencies (available liquidity).
-        // Done HERE after the Playwright browser is fully closed.
-        let mergedCount = 0;
-        try {
-          console.log(`[gate-rate-cap] Hybrid merge: scrape has ${scrapeCount} tokens, fetching API…`);
-          const [ratesResp, currResp, spotResp] = await Promise.allSettled([
-            fetch("https://api.gateio.ws/api/v4/earn/uni/rate",       { signal: AbortSignal.timeout(15_000) }).then(r => r.ok ? r.json() as Promise<Array<{ currency: string; est_rate: string }>> : []),
-            fetch("https://api.gateio.ws/api/v4/earn/uni/currencies",  { signal: AbortSignal.timeout(15_000) }).then(r => r.ok ? r.json() as Promise<Array<{ currency: string; available_lend_amount: string }>> : []),
-            fetch("https://api.gateio.ws/api/v4/spot/tickers",         { signal: AbortSignal.timeout(15_000) }).then(r => r.ok ? r.json() as Promise<Array<{ currency_pair: string; last: string }>> : []),
-          ]);
-
-          // Build liquidity and price maps
-          const availMap = new Map<string, number>();
-          if (currResp.status === "fulfilled") {
-            for (const item of currResp.value) {
-              const amt = parseFloat(item.available_lend_amount);
-              if (!isNaN(amt)) availMap.set(item.currency.toUpperCase(), amt);
-            }
-          }
-          const spotMap = new Map<string, number>();
-          if (spotResp.status === "fulfilled") {
-            for (const item of spotResp.value) {
-              if (item.currency_pair.endsWith("_USDT")) {
-                const base = item.currency_pair.replace("_USDT", "").toUpperCase();
-                spotMap.set(base, parseFloat(item.last || "0"));
-              }
-            }
-          }
-
-          const rates = ratesResp.status === "fulfilled" ? ratesResp.value : [];
-          console.log(`[gate-rate-cap] earn/uni/rate: ${rates.length} tokens, earn/uni/currencies: ${availMap.size}, spot: ${spotMap.size}`);
-          const now = Date.now();
-          for (const item of rates) {
-            const token = item.currency.toUpperCase();
-            if (!data.has(token)) {
-              const liquidityTokenRaw = availMap.get(token) ?? null;
-              const spotPrice = spotMap.get(token) ?? 0;
-              const liquidityUsdtRaw = liquidityTokenRaw != null && spotPrice > 0 ? liquidityTokenRaw * spotPrice : null;
-              data.set(token, {
-                token,
-                borrowApr: parseFloat(item.est_rate) * VIP0_MULTIPLIER * 100,
-                liquidityTokenRaw,
-                liquidityUsdtRaw,
-                source: "api-fallback",
-                scrapedAt: now,
-              });
-              mergedCount++;
-            }
-          }
-          console.log(`[gate-rate-cap] Hybrid merge added ${mergedCount} tokens (total ${data.size})`);
-        
-        } catch (err) {
-          console.warn("[gate-rate-cap] Hybrid merge failed:", err instanceof Error ? err.message : err);
-        }
-
-        const src = scrapeCount > 0 ? "scrape" : "api-fallback";
+        const hasApiKeys = Boolean(process.env.GATE_API_KEY && process.env.GATE_API_SECRET);
+        const scrapeCount = hasApiKeys ? 0 : data.size;
+        const mergedCount = hasApiKeys ? data.size : 0;
+        const src: "scrape" | "api-fallback" = hasApiKeys ? "api-fallback" : "scrape";
         cache = { data, fetchedAt: Date.now(), source: src, scrapeCount, mergedCount };
         scrapeInProgress = null;
         return data;

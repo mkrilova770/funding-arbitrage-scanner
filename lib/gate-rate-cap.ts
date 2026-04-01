@@ -479,6 +479,7 @@ async function apiFallbackWithBorrowable(): Promise<Map<string, GateRateCapEntry
       console.log(`[gate-rate-cap] Overlaid borrowable data for ${borrowable.size} tokens`);
     } catch (err) {
       console.warn("[gate-rate-cap] Borrowable API failed:", err);
+      throw err;
     }
   } else {
     console.log("[gate-rate-cap] No GATE_API_KEY configured – liquidity data unavailable");

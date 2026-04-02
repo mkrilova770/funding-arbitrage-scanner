@@ -161,19 +161,18 @@ function sortGroups(groups: TokenGroup[], key: GroupSortKey, dir: SortDir): Toke
   return [...groups].sort((a, b) => {
     let av: number | string;
     let bv: number | string;
-    // opportunities[0] = best Net APR within group; best = lead row (max |Funding APR|)
-    const bestNet = (g: TokenGroup) => g.opportunities[0];
     switch (key) {
       case "token":         av = a.token;                 bv = b.token;                 break;
       case "rawFunding":    av = a.best.rawFunding;       bv = b.best.rawFunding;       break;
-      case "netAPR":        av = bestNet(a).netAPR;       bv = bestNet(b).netAPR;       break;
+      // Sort by the same value shown in the collapsed row (lead exchange)
+      case "netAPR":        av = a.best.netAPR;           bv = b.best.netAPR;           break;
       case "fundingAPR":    av = a.best.fundingAPR;       bv = b.best.fundingAPR;       break;
       case "borrowAPR":     av = a.best.borrowAPR;        bv = b.best.borrowAPR;        break;
       case "spread":        av = a.best.spread;           bv = b.best.spread;           break;
       case "exchangeCount": av = a.exchangeCount;         bv = b.exchangeCount;         break;
       case "nextFundingTime":  av = a.best.nextFundingTime || 0;        bv = b.best.nextFundingTime || 0;        break;
       case "borrowLiquidity":  av = a.best.borrowLiquidityUsdt ?? -1;   bv = b.best.borrowLiquidityUsdt ?? -1;   break;
-      default:                 av = bestNet(a).netAPR;                  bv = bestNet(b).netAPR;
+      default:                 av = a.best.netAPR;                      bv = b.best.netAPR;
     }
     if (typeof av === "string" && typeof bv === "string") {
       return dir === "asc" ? av.localeCompare(bv) : bv.localeCompare(av);

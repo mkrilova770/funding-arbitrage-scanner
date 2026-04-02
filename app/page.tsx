@@ -1,12 +1,28 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Providers } from "@/components/Providers";
 import { ArbitrageTable } from "@/components/ArbitrageTable";
 import { TokenModal } from "@/components/TokenModal";
 import { StatusBar } from "@/components/StatusBar";
 import { useArbitrageData } from "@/hooks/useArbitrageData";
 import { ArbitrageRow } from "@/types";
+
+const FUTURES_EXCHANGES_DEFAULT = [
+  "Binance",
+  "OKX",
+  "Bybit",
+  "Gate",
+  "Bitget",
+  "BingX",
+  "XT",
+  "MEXC",
+  "BitMart",
+  "KuCoin",
+] as const;
+
+const EXCHANGE_TOGGLES_LS_KEY = "fa.enabledFuturesExchanges.v1";
+const MIN_BORROW_USD_LS_KEY = "fa.minAvailableBorrowUsd.v1";
 
 function Dashboard() {
   const {
@@ -22,6 +38,70 @@ function Dashboard() {
 
   const [search, setSearch] = useState("");
   const [selectedRow, setSelectedRow] = useState<ArbitrageRow | null>(null);
+  const [showExchangeToggles, setShowExchangeToggles] = useState(false);
+  const [enabledExchanges, setEnabledExchanges] = useState<Set<string>>(
+    () => new Set(FUTURES_EXCHANGES_DEFAULT)
+  );
+  const [minBorrowUsd, setMinBorrowUsd] = useState<number>(0);
+
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(EXCHANGE_TOGGLES_LS_KEY);
+      if (!raw) return;
+      const parsed = JSON.parse(raw) as unknown;
+      if (Array.isArray(parsed)) {
+        const next = new Set<string>();
+        for (const v of parsed) if (typeof v === "string") next.add(v);
+        if (next.size > 0) setEnabledExchanges(next);
+      }
+    } catch {
+      // ignore
+    }
+  }, []);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(EXCHANGE_TOGGLES_LS_KEY, JSON.stringify([...enabledExchanges]));
+    } catch {
+      // ignore
+    }
+  }, [enabledExchanges]);
+
+  // Load/persist minimum Available Borrow filter (USD)
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(MIN_BORROW_USD_LS_KEY);
+      if (!raw) return;
+      const n = Number(raw);
+      if (!Number.isNaN(n) && n >= 0) setMinBorrowUsd(n);
+    } catch {
+      // ignore
+    }
+  }, []);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(MIN_BORROW_USD_LS_KEY, String(minBorrowUsd));
+    } catch {
+      // ignore
+    }
+  }, [minBorrowUsd]);
+
+  const availableExchanges = useMemo(() => {
+    const set = new Set<string>();
+    for (const r of rows) set.add(r.exchange);
+    for (const name of FUTURES_EXCHANGES_DEFAULT) set.add(name);
+    return [...set].sort((a, b) => a.localeCompare(b));
+  }, [rows]);
+
+  const filteredRows = useMemo(() => {
+    return rows.filter((r) => {
+      if (!enabledExchanges.has(r.exchange)) return false;
+      if (minBorrowUsd <= 0) return true;
+      const liq = r.borrowLiquidityUsdt ?? 0;
+      return liq >= minBorrowUsd;
+    });
+  }, [rows, enabledExchanges, minBorrowUsd]);
 
   return (
     <div className="min-h-screen bg-[#0a0e17]">
@@ -50,6 +130,79 @@ function Dashboard() {
               placeholder="Search token or exchange..."
               className="flex-1 bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-blue-500 transition-colors"
             />
+            <input
+              type="number"
+              min={0}
+              step={100}
+              value={minBorrowUsd}
+              onChange={(e) => setMinBorrowUsd(Math.max(0, Number(e.target.value) || 0))}
+              placeholder="Min borrow $"
+              title="Filter tokens by Gate Available Borrow (USDT equivalent) ≥ this amount"
+              className="w-32 bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-blue-500 transition-colors"
+            />
+            <div className="relative">
+              <button
+                onClick={() => setShowExchangeToggles((v) => !v)}
+                className="bg-gray-800 hover:bg-gray-700 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-300 transition-colors whitespace-nowrap"
+                title="Enable/disable futures exchanges"
+                type="button"
+              >
+                Exchanges
+              </button>
+              {showExchangeToggles && (
+                <div className="absolute right-0 mt-2 w-64 rounded-lg border border-gray-700 bg-gray-900 shadow-xl p-3 z-50">
+                  <div className="flex items-center justify-between mb-2">
+                    <div className="text-xs text-gray-400">Futures exchanges</div>
+                    <button
+                      className="text-xs text-gray-400 hover:text-white"
+                      onClick={() => setEnabledExchanges(new Set(availableExchanges))}
+                      type="button"
+                    >
+                      All
+                    </button>
+                  </div>
+                  <div className="max-h-64 overflow-auto pr-1 space-y-1">
+                    {availableExchanges.map((name) => {
+                      const checked = enabledExchanges.has(name);
+                      return (
+                        <label key={name} className="flex items-center gap-2 text-sm text-gray-200">
+                          <input
+                            type="checkbox"
+                            checked={checked}
+                            onChange={() => {
+                              setEnabledExchanges((prev) => {
+                                const next = new Set(prev);
+                                if (next.has(name)) next.delete(name);
+                                else next.add(name);
+                                if (next.size === 0) return prev;
+                                return next;
+                              });
+                            }}
+                          />
+                          <span>{name}</span>
+                        </label>
+                      );
+                    })}
+                  </div>
+                  <div className="mt-3 flex items-center justify-between">
+                    <button
+                      className="text-xs text-gray-400 hover:text-white"
+                      onClick={() => setEnabledExchanges(new Set(FUTURES_EXCHANGES_DEFAULT))}
+                      type="button"
+                    >
+                      Reset
+                    </button>
+                    <button
+                      className="text-xs text-gray-400 hover:text-white"
+                      onClick={() => setShowExchangeToggles(false)}
+                      type="button"
+                    >
+                      Close
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
             <button
               onClick={() => refetch()}
               disabled={isFetching}
@@ -125,7 +278,7 @@ function Dashboard() {
             </div>
           ) : (
             <ArbitrageTable
-              rows={rows}
+              rows={filteredRows}
               search={search}
               onRowClick={setSelectedRow}
             />

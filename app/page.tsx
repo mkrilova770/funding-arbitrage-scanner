@@ -28,6 +28,7 @@ function Dashboard() {
   const {
     rows,
     fetchedAt,
+    bitgetBorrow,
     errors,
     isLoading,
     isFetching,
@@ -117,7 +118,7 @@ function Dashboard() {
                 Funding Arbitrage Scanner
               </h1>
               <p className="text-gray-500 text-xs leading-tight">
-                Gate.io margin short · Long → Futures
+                Bitget isolated margin short · Long → Futures
               </p>
             </div>
           </div>
@@ -137,7 +138,7 @@ function Dashboard() {
               value={minBorrowUsd}
               onChange={(e) => setMinBorrowUsd(Math.max(0, Number(e.target.value) || 0))}
               placeholder="Min borrow $"
-              title="Filter tokens by Gate Available Borrow (USDT equivalent) ≥ this amount"
+              title="Filter tokens by Bitget Available Borrow (USDT equivalent) ≥ this amount"
               className="w-32 bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-blue-500 transition-colors"
             />
             <div className="relative">
@@ -222,6 +223,7 @@ function Dashboard() {
           isError={isError}
           rowCount={rows.length}
           errors={errors}
+          bitgetBorrow={bitgetBorrow}
         />
       </div>
 
@@ -232,7 +234,7 @@ function Dashboard() {
             <span className="text-white">Long →</span> Futures exchange (always)
           </span>
           <span>
-            <span className="text-white">Short →</span> Gate.io isolated margin
+            <span className="text-white">Short →</span> Bitget isolated margin
             (always)
           </span>
           <span className="text-gray-700">·</span>
@@ -263,7 +265,7 @@ function Dashboard() {
                 Loading data from 10 exchanges...
               </div>
               <div className="text-gray-600 text-xs">
-                First load may take 15-30 seconds
+                First load usually under a minute; if it stalls, check API keys and terminal logs
               </div>
             </div>
           ) : isError ? (

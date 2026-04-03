@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useMemo, Fragment } from "react";
+import { useState, useMemo, Fragment, type ReactNode } from "react";
 import { ArbitrageRow } from "@/types";
 import { formatDistanceToNow } from "date-fns";
 
@@ -71,18 +71,31 @@ function fmtLiq(n: number | null | undefined): string {
 }
 
 /**
- * Combined "Available Borrow" cell: token + usdt → "2.62K (~$177.09M)"
- * Only USDT → "~$177.09M", only token → "2.62K", both null → "—"
+ * Bitget borrow pool (~USDT · token). With API keys: V2 isolated interest/tier/account; always UTA margin-loans as fallback.
  */
 function fmtAvailBorrow(
-  token: number | null | undefined,
-  usdt: number | null | undefined,
-): string {
-  const t = token != null ? fmtLiq(token) : null;
-  const u = usdt != null ? `~$${fmtLiq(usdt)}` : null;
-  if (t && u) return `${t} (${u})`;
+  symbol: string,
+  liqToken: number | null | undefined,
+  liqUsdt: number | null | undefined,
+  borrowPoolFromUta: boolean | undefined,
+): ReactNode {
+  const t = liqToken != null ? fmtLiq(liqToken) : null;
+  const u = liqUsdt != null ? `~$${fmtLiq(liqUsdt)}` : null;
+
+  if (borrowPoolFromUta === false) {
+    const title =
+      "No borrow limit from Bitget (signed V2 isolated + UTA). Often fixed by setting BITGET_API_KEY, BITGET_API_SECRET, BITGET_PASSPHRASE for V2 isolated APIs.";
+    return (
+      <span className="text-gray-500" title={title}>
+        —{" "}
+        <span className="text-[10px] opacity-80">(no limit)</span>
+      </span>
+    );
+  }
+
+  if (t && u) return `${u} · ${t} ${symbol}`;
   if (u) return u;
-  if (t) return t;
+  if (t) return `${t} ${symbol}`;
   return "—";
 }
 
@@ -189,9 +202,14 @@ const GROUP_SORT_COLS: { key: GroupSortKey; label: string; title?: string }[] = 
   { key: "token",               label: "Token" },
   { key: "netAPR",              label: "Net APR",        title: "Best Net APR = Funding APR − Borrow APR" },
   { key: "fundingAPR",          label: "Funding APR",    title: "Best annualized funding APR (%)" },
-  { key: "borrowAPR",           label: "Borrow APR",     title: "Gate isolated margin borrow APR % (VIP 0, real data)" },
+  { key: "borrowAPR",           label: "Borrow APR",     title: "Bitget borrow APR % (V2 isolated when API keys set, else UTA margin-loans)" },
   { key: "spread",           label: "Spread",            title: "Best spread: (futures − spot) / spot × 100%" },
-  { key: "borrowLiquidity",  label: "Available Borrow",  title: "Gate available borrow pool (sorted by USDT value)" },
+  {
+    key: "borrowLiquidity",
+    label: "Available Borrow",
+    title:
+      "Borrow limit ~USDT · token: V2 signed isolated (+ tier / max-borrow) if keys set; else UTA margin-loans only.",
+  },
   { key: "exchangeCount",    label: "Exchanges",         title: "Number of exchanges with a match" },
   { key: "nextFundingTime",     label: "Next Funding",   title: "Next funding time for best exchange" },
 ];
@@ -320,7 +338,12 @@ function GroupedTable({
                 </td>
                 {/* Available Borrow */}
                 <td className="px-3 py-2.5 font-mono text-cyan-400 text-xs whitespace-nowrap">
-                  {fmtAvailBorrow(best.borrowLiquidityToken, best.borrowLiquidityUsdt)}
+                  {fmtAvailBorrow(
+                    best.token,
+                    best.borrowLiquidityToken,
+                    best.borrowLiquidityUsdt,
+                    best.borrowPoolFromUta
+                  )}
                 </td>
                 {/* Exchange count */}
                 <td className="px-3 py-2.5 text-center">
@@ -387,7 +410,14 @@ function GroupedTable({
                     </td>
                     {/* Available Borrow — same for all exchanges of a token, show only in first sub-row */}
                     <td className="px-3 py-2 font-mono text-xs text-cyan-400/60 whitespace-nowrap">
-                      {idx === 0 ? fmtAvailBorrow(opp.borrowLiquidityToken, opp.borrowLiquidityUsdt) : ""}
+                      {idx === 0
+                        ? fmtAvailBorrow(
+                            opp.token,
+                            opp.borrowLiquidityToken,
+                            opp.borrowLiquidityUsdt,
+                            opp.borrowPoolFromUta
+                          )
+                        : ""}
                     </td>
                     {/* Exchanges count — empty for sub-row */}
                     <td className="px-3 py-2" />
@@ -412,10 +442,15 @@ const FLAT_COLUMNS: { key: FlatSortKey; label: string; title?: string }[] = [
   { key: "exchange",            label: "Exchange" },
   { key: "rawFunding",          label: "Raw Funding" },
   { key: "fundingAPR",          label: "Funding APR",    title: "Annualized funding APR (%)" },
-  { key: "borrowAPR",           label: "Borrow APR",     title: "Gate isolated margin borrow APR % (VIP 0)" },
+  { key: "borrowAPR",           label: "Borrow APR",     title: "Bitget borrow APR % (V2 isolated with keys, else UTA)" },
   { key: "spread",          label: "Spread",           title: "(futures − spot) / spot × 100%" },
   { key: "netAPR",          label: "Net APR",          title: "Net APR = Funding APR − Borrow APR" },
-  { key: "borrowLiquidity", label: "Available Borrow", title: "Gate available borrow pool (sorted by USDT value)" },
+  {
+    key: "borrowLiquidity",
+    label: "Available Borrow",
+    title:
+      "Borrow limit ~USDT · token: V2 signed + UTA (see grouped headers).",
+  },
   { key: "nextFundingTime", label: "Next Funding" },
 ];
 
@@ -473,7 +508,12 @@ function FlatTable({ rows, sortKey, sortDir, onSort, onRowClick }: FlatTableProp
               {fmtPct(row.netAPR, 2)}
             </td>
             <td className="px-3 py-2.5 font-mono text-cyan-400 text-xs whitespace-nowrap">
-              {fmtAvailBorrow(row.borrowLiquidityToken, row.borrowLiquidityUsdt)}
+              {fmtAvailBorrow(
+                row.token,
+                row.borrowLiquidityToken,
+                row.borrowLiquidityUsdt,
+                row.borrowPoolFromUta
+              )}
             </td>
             <td className="px-3 py-2.5 text-gray-500 text-xs whitespace-nowrap">
               {fmtTime(row.nextFundingTime)}

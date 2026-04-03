@@ -1,3 +1,4 @@
+# New Project → Deploy from GitHub; не конфликтует с другими сервисами в аккаунте (свой URL и Variables).
 [build]
 builder = "dockerfile"
 dockerfilePath = "Dockerfile"

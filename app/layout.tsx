@@ -2,8 +2,8 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Funding Arbitrage Scanner",
-  description: "Gate.io isolated margin vs USDT perpetual futures funding arbitrage",
+  title: "Funding Arbitrage Scanner · Bitget",
+  description: "Bitget isolated margin vs USDT perpetual futures funding arbitrage",
 };
 
 export default function RootLayout({

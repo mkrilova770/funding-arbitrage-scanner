@@ -34,6 +34,10 @@ yarn-error.log*
 .env*
 !.env.example
 
+# Railway: local API token + CLI link (never commit)
+railway.local.env
+.railway/
+
 # vercel
 .vercel
 

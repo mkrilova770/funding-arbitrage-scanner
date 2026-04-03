@@ -6,7 +6,12 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "railway:whoami": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/railway-with-env.ps1 whoami",
+    "railway:up": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/railway-with-env.ps1 up --ci",
+    "railway:up:detach": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/railway-with-env.ps1 up -d",
+    "railway:logs": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/railway-with-env.ps1 logs",
+    "railway:redeploy": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/railway-with-env.ps1 redeploy"
   },
   "dependencies": {
     "@tanstack/react-query": "^5.95.2",

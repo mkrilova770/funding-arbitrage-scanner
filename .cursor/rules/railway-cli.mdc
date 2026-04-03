@@ -1,0 +1,13 @@
+---
+description: Deploy or operate Railway via local CLI using railway.local.env (no secrets in chat).
+alwaysApply: false
+---
+
+# Railway CLI from this repo
+
+- Never ask the user to paste `RAILWAY_TOKEN` or API keys into chat.
+- If the user wants a Railway deploy or `railway` commands, ensure **`railway.local.env`** exists (copy from `railway.local.env.example`) with `RAILWAY_TOKEN` set **locally** by the user.
+- Verify auth: `npm run railway:whoami` (runs `scripts/railway-with-env.ps1`).
+- Deploy from repo root: `npm run railway:up` (CI log mode). Use `npm run railway:logs` / `npm run railway:redeploy` as needed.
+- If the directory is not linked, the user (or agent after `link`) must run `npx @railway/cli link -p <PROJECT_ID> -e production -s <SERVICE>` once; IDs come from the Railway dashboard URL.
+- App secrets (`BITGET_*`) belong in Railway **Dashboard → Variables**, not only in `railway.local.env`.

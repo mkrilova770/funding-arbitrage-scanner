@@ -83,6 +83,33 @@ Spread% = (futuresPrice - spotPrice) / spotPrice × 100
 
 База **Playwright** (`chromium`) — для совместимости с кодом `gate-rate-cap`; главная страница и `/api/scan` от неё не зависят.
 
+### Доступ Cursor / агента к Railway CLI (токен локально)
+
+Я не могу «войти» в браузер за вас, но могу запускать деплой из терминала, если токен лежит **только на диске**, не в чате:
+
+1. Создайте токен: [railway.app/account/tokens](https://railway.app/account/tokens) (**New token**) или **Project → Settings → Tokens** (project token).
+2. Скопируйте **`railway.local.env.example`** → **`railway.local.env`** в корне репозитория.
+3. Вставьте значение в строку `RAILWAY_TOKEN=...` и сохраните файл.  
+   **Не отправляйте** токен в сообщения ИИ и не коммитьте `railway.local.env` (он в `.gitignore`).
+4. Один раз свяжите каталог с проектом (ID из URL дашборда Railway; имя сервиса как в UI):
+
+   ```powershell
+   npm run railway:whoami
+   powershell -NoProfile -ExecutionPolicy Bypass -File scripts/railway-with-env.ps1 link -p <PROJECT_ID> -e production -s <SERVICE_NAME_OR_ID>
+   ```
+
+   Конфиг сохранится в **`.railway/`** (тоже в `.gitignore`).
+
+5. Деплой текущего кода с этой машины:
+
+   ```powershell
+   npm run railway:up
+   ```
+
+   Логи: `npm run railway:logs`; повторный деплой того же билда: `npm run railway:redeploy`.
+
+Скрипт **`scripts/railway-with-env.ps1`** подхватывает `railway.local.env` и вызывает CLI. На Railway в веб-интерфейсе по-прежнему нужно задать **`BITGET_*`** для самого приложения.
+
 ---
 
 ## Поля таблицы

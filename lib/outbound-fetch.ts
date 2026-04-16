@@ -3,13 +3,15 @@ import https from "node:https";
 import { URL } from "node:url";
 import { HttpsProxyAgent } from "https-proxy-agent";
 
-let cachedAgent: HttpsProxyAgent<string> | undefined;
+const proxyAgentCache = new Map<string, HttpsProxyAgent<string>>();
 
 function getProxyAgent(proxyUrl: string): HttpsProxyAgent<string> {
-  if (cachedAgent === undefined) {
-    cachedAgent = new HttpsProxyAgent(proxyUrl);
+  let agent = proxyAgentCache.get(proxyUrl);
+  if (!agent) {
+    agent = new HttpsProxyAgent(proxyUrl);
+    proxyAgentCache.set(proxyUrl, agent);
   }
-  return cachedAgent;
+  return agent;
 }
 
 function mergeSignals(

@@ -2,8 +2,8 @@ import {
   ExchangeAdapter,
   FundingInfo,
   normalizeBaseToken,
-  fetchWithTimeout,
 } from "./types";
+import { fetchWithDirectFirstThenProxyOnBlock } from "@/lib/exchanges/direct-then-proxy-fetch";
 
 function parseBybitApiBases(): string[] {
   const raw = process.env.BYBIT_API_BASES?.trim();
@@ -44,7 +44,7 @@ export class BybitAdapter implements ExchangeAdapter {
 
     for (const base of bases) {
       const url = `${base}/v5/market/tickers?category=linear`;
-      const res = await fetchWithTimeout(url);
+      const res = await fetchWithDirectFirstThenProxyOnBlock(url, {}, 15_000);
       lastRes = res;
       if (!res.ok) {
         const snippet = await res

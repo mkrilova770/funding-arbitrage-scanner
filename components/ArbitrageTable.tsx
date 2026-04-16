@@ -3,6 +3,10 @@
 import { useState, useMemo, Fragment, useEffect } from "react";
 import { ArbitrageRow } from "@/types";
 import { formatDistanceToNow } from "date-fns";
+import {
+  formatUsdBorrowLiquidity,
+  formatTokenBorrowLiquidity,
+} from "@/lib/liquidity-display";
 
 // ── Local types ──────────────────────────────────────────────────────────────
 
@@ -63,29 +67,6 @@ function fmtRaw(n: number): string {
   return `${sign}${(n * 100).toFixed(5)}%`;
 }
 
-/** Token amount: compact K/M/B when large; otherwise fixed precision for small caps */
-function fmtTokenAmount(n: number | null | undefined): string {
-  if (n === null || n === undefined) return "—";
-  if (n === 0) return "0";
-  const abs = Math.abs(n);
-  if (abs >= 1_000_000_000) return `${(n / 1_000_000_000).toFixed(2)}B`;
-  if (abs >= 1_000_000) return `${(n / 1_000_000).toFixed(2)}M`;
-  if (abs >= 1000) return `${(n / 1000).toFixed(2)}K`;
-  if (abs >= 1) return n.toFixed(4);
-  return n.toPrecision(4);
-}
-
-/** USDT leg: exact dollars with 2 decimals under $1000; compact K/M/B from $1000 up */
-function fmtUsdLiq(n: number | null | undefined): string {
-  if (n === null || n === undefined) return "—";
-  if (n === 0) return "$0.00";
-  const abs = Math.abs(n);
-  if (abs < 1000) return `$${n.toFixed(2)}`;
-  if (abs >= 1_000_000_000) return `$${(n / 1_000_000_000).toFixed(2)}B`;
-  if (abs >= 1_000_000) return `$${(n / 1_000_000).toFixed(2)}M`;
-  return `$${(n / 1000).toFixed(2)}K`;
-}
-
 function fmtRoundTripFeesPct(n: number | null | undefined): string {
   if (n === null || n === undefined) return "—";
   return `${n.toFixed(3)}%`;
@@ -95,8 +76,8 @@ function fmtAvailBorrow(
   token: number | null | undefined,
   usdt: number | null | undefined,
 ): string {
-  const t = token != null ? fmtTokenAmount(token) : null;
-  const u = usdt != null ? fmtUsdLiq(usdt) : null;
+  const t = token != null ? formatTokenBorrowLiquidity(token) : null;
+  const u = usdt != null ? formatUsdBorrowLiquidity(usdt) : null;
   if (t && u) return `${t} (${u})`;
   if (u) return u;
   if (t) return t;

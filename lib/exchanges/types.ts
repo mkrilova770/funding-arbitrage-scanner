@@ -1,3 +1,5 @@
+import { pickGlobalOutboundProxyUrl } from "@/lib/exchanges/proxy-utils";
+
 export interface FundingInfo {
   exchange: string;
   baseToken: string; // normalized, e.g. "BTC"
@@ -49,21 +51,13 @@ export function normalizeBaseToken(symbol: string): string | null {
   return null;
 }
 
-function pickOutboundProxyUrl(): string | null {
-  const explicit =
-    process.env.EXCHANGE_PROXY_URL?.trim() ||
-    process.env.HTTPS_PROXY?.trim() ||
-    process.env.HTTP_PROXY?.trim();
-  return explicit || null;
-}
-
 /** Simple fetch with timeout */
 export async function fetchWithTimeout(
   url: string,
   options: RequestInit = {},
   timeoutMs = 10000
 ): Promise<Response> {
-  const proxyUrl = pickOutboundProxyUrl();
+  const proxyUrl = pickGlobalOutboundProxyUrl();
   if (proxyUrl) {
     return await import("@/lib/outbound-fetch").then(({ fetchViaProxy }) =>
       fetchViaProxy(url, proxyUrl, options, timeoutMs)

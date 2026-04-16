@@ -5,6 +5,7 @@ import {
   fetchWithTimeout,
 } from "./types";
 import { GateMarginPair, GateBorrowInfo } from "@/types";
+import { formatUsdBorrowLiquidity } from "@/lib/liquidity-display";
 
 // ─── Margin pairs ───────────────────────────────────────────────────────────
 
@@ -170,6 +171,18 @@ export async function fetchGateBorrowInfo(
       spotPrice,
     });
   }
+
+  let liquidityLogCount = 0;
+  const maxLiquidityLogs = 8;
+  for (const [upper, info] of result) {
+    if (info.liquidityUsdt == null) continue;
+    if (liquidityLogCount >= maxLiquidityLogs) break;
+    const raw = info.liquidityUsdt;
+    const formatted = formatUsdBorrowLiquidity(raw);
+    console.log(`[Gate Liquidity] Raw: ${raw}, Formatted: ${formatted} token=${upper}`);
+    liquidityLogCount++;
+  }
+
   return result;
 }
 

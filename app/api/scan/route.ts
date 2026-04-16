@@ -20,6 +20,11 @@ import {
 } from "@/lib/exchanges/types";
 import { ArbitrageRow, ScanResponse } from "@/types";
 import { getTradingFeesPercent } from "@/lib/fees";
+import {
+  pickBinanceBybitDedicatedProxyUrl,
+  pickGlobalOutboundProxyUrl,
+  redactProxyUrl,
+} from "@/lib/exchanges/proxy-utils";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
@@ -112,7 +117,24 @@ let refreshInProgress: Promise<void> | null = null;
 /** Last successful funding map per exchange; used when a refresh fails so rows are not wiped. */
 let lastExchangeFundingByName = new Map<string, Map<string, FundingInfo>>();
 
+let loggedOutboundProxyConfig = false;
+
 async function buildScanResponse(): Promise<ScanResponse> {
+  if (!loggedOutboundProxyConfig) {
+    loggedOutboundProxyConfig = true;
+    const dedicated = pickBinanceBybitDedicatedProxyUrl();
+    const globalP = pickGlobalOutboundProxyUrl();
+    if (dedicated || globalP) {
+      console.log(
+        `[scan] Proxy env: EXCHANGE_BINANCE_BYBIT_PROXY_URL=${dedicated ? redactProxyUrl(dedicated) : "(unset)"} EXCHANGE_PROXY_URL/HTTPS_PROXY=${globalP ? redactProxyUrl(globalP) : "(unset)"}`
+      );
+    } else {
+      console.log(
+        `[scan] No proxy env — Gate uses direct fetch; Binance/Bybit try direct then 403/451 retry via proxy if you add EXCHANGE_BINANCE_BYBIT_PROXY_URL or EXCHANGE_PROXY_URL.`
+      );
+    }
+  }
+
   const errors: Record<string, string> = {};
   const fetchedAt = Date.now();
 

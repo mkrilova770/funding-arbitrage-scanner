@@ -55,7 +55,17 @@ export interface BitgetBorrowInfo {
   liquidityToken: number | null;
   liquidityUsdt: number | null;
   spotPrice: number;
+  hasUtaBorrowQuote: boolean;
+  hasIsolatedPublicQuote: boolean;
+  hasSignedIsolatedQuote: boolean;
+  liquiditySource:
+    | "isolated-v2-private"
+    | "isolated-v1-public"
+    | "uta-v3-public"
+    | null;
 }
+
+export type BitgetMarginSignedBlockReason = "no_margin_account" | "bad_auth";
 
 export interface ScanResponse {
   rows: ArbitrageRow[];

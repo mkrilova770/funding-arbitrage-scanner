@@ -47,9 +47,16 @@ interface GateEarnUniRate {
 
 interface GateEarnUniCurrency {
   currency: string; // e.g. "BTC"
-  amount: string; // total in pool
-  lent_amount: string; // already lent out
-  frozen_amount: string; // frozen / reserved
+  amount?: string; // not always present in API response
+  lent_amount?: string; // not always present in API response
+  frozen_amount?: string; // not always present in API response
+}
+
+interface GateMarginPairLiquidityRaw {
+  base: string;
+  quote: string;
+  max_quote_amount?: string; // platform quote cap in USDT
+  status: number;
 }
 
 /**
@@ -78,6 +85,17 @@ export async function fetchGateBorrowInfo(
       (r) => (r.ok ? (r.json() as Promise<GateSpotTicker[]>) : ([] as GateSpotTicker[]))
     ),
   ]);
+  const marginPairsRes = await fetchWithTimeout(
+    "https://api.gateio.ws/api/v4/margin/currency_pairs",
+    {},
+    15_000
+  )
+    .then((r) =>
+      r.ok
+        ? (r.json() as Promise<GateMarginPairLiquidityRaw[]>)
+        : ([] as GateMarginPairLiquidityRaw[])
+    )
+    .catch(() => [] as GateMarginPairLiquidityRaw[]);
 
   const spotMap = new Map<string, number>();
   if (spotRes.status === "fulfilled") {
@@ -116,18 +134,38 @@ export async function fetchGateBorrowInfo(
     }
   }
 
+  // Public fallback for liquidity: margin pair quote cap (USDT).
+  const maxQuoteUsdtMap = new Map<string, number>();
+  for (const pair of marginPairsRes) {
+    if (pair.quote !== "USDT" || pair.status !== 1) continue;
+    const upper = (pair.base || "").toUpperCase();
+    if (!upper) continue;
+    const maxQ = parseFloat(pair.max_quote_amount || "0");
+    if (Number.isFinite(maxQ) && maxQ > 0) {
+      maxQuoteUsdtMap.set(upper, maxQ);
+    }
+  }
+
   const result = new Map<string, GateBorrowInfo>();
   for (const token of tokens) {
     const upper = token.toUpperCase();
     const spotPrice = spotMap.get(upper) ?? 0;
-    const liquidityToken = availableTokenMap.get(upper);
-    const liquidityUsdt =
+    let liquidityToken = availableTokenMap.get(upper) ?? null;
+    let liquidityUsdt =
       liquidityToken != null && spotPrice > 0 ? liquidityToken * spotPrice : null;
+
+    // If Earn Uni currencies lacks pool balance fields, fallback to public margin quote cap.
+    if ((liquidityUsdt == null || liquidityUsdt <= 0) && maxQuoteUsdtMap.has(upper)) {
+      liquidityUsdt = maxQuoteUsdtMap.get(upper) ?? null;
+      if ((liquidityToken == null || liquidityToken <= 0) && liquidityUsdt != null && spotPrice > 0) {
+        liquidityToken = liquidityUsdt / spotPrice;
+      }
+    }
 
     result.set(upper, {
       currency: upper,
       borrowAPR: aprMap.get(upper) ?? 0,
-      liquidityToken: liquidityToken ?? null,
+      liquidityToken,
       liquidityUsdt,
       spotPrice,
     });

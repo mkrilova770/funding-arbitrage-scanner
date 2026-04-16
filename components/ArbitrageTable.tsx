@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useMemo, Fragment, type ReactNode } from "react";
+import { useState, useMemo, Fragment, useEffect } from "react";
 import { ArbitrageRow } from "@/types";
 import { formatDistanceToNow } from "date-fns";
 
@@ -45,6 +45,8 @@ interface ArbitrageTableProps {
   onRowClick: (row: ArbitrageRow) => void;
 }
 
+const MIN_LIQUIDITY_USD_LS_KEY = "fa.minLiquidityUsd.v1";
+
 // ── Formatters ───────────────────────────────────────────────────────────────
 
 function fmtPct(n: number, decimals = 2): string {
@@ -70,32 +72,15 @@ function fmtLiq(n: number | null | undefined): string {
   return n.toPrecision(3);
 }
 
-/**
- * Bitget borrow pool (~USDT · token). With API keys: V2 isolated interest/tier/account; always UTA margin-loans as fallback.
- */
 function fmtAvailBorrow(
-  symbol: string,
-  liqToken: number | null | undefined,
-  liqUsdt: number | null | undefined,
-  borrowPoolFromUta: boolean | undefined,
-): ReactNode {
-  const t = liqToken != null ? fmtLiq(liqToken) : null;
-  const u = liqUsdt != null ? `~$${fmtLiq(liqUsdt)}` : null;
-
-  if (borrowPoolFromUta === false) {
-    const title =
-      "No borrow limit from Bitget (signed V2 isolated + UTA). Often fixed by setting BITGET_API_KEY, BITGET_API_SECRET, BITGET_PASSPHRASE for V2 isolated APIs.";
-    return (
-      <span className="text-gray-500" title={title}>
-        —{" "}
-        <span className="text-[10px] opacity-80">(no limit)</span>
-      </span>
-    );
-  }
-
-  if (t && u) return `${u} · ${t} ${symbol}`;
+  token: number | null | undefined,
+  usdt: number | null | undefined,
+): string {
+  const t = token != null ? fmtLiq(token) : null;
+  const u = usdt != null ? `~$${fmtLiq(usdt)}` : null;
+  if (t && u) return `${t} (${u})`;
   if (u) return u;
-  if (t) return `${t} ${symbol}`;
+  if (t) return t;
   return "—";
 }
 
@@ -200,16 +185,11 @@ function sortGroups(groups: TokenGroup[], key: GroupSortKey, dir: SortDir): Toke
 
 const GROUP_SORT_COLS: { key: GroupSortKey; label: string; title?: string }[] = [
   { key: "token",               label: "Token" },
-  { key: "netAPR",              label: "Net APR",        title: "Best Net APR = Funding APR − Borrow APR" },
+  { key: "netAPR",              label: "Net APR",        title: "Best Net APR = Funding APR − Borrow APR − Trading fees" },
   { key: "fundingAPR",          label: "Funding APR",    title: "Best annualized funding APR (%)" },
-  { key: "borrowAPR",           label: "Borrow APR",     title: "Bitget borrow APR % (V2 isolated when API keys set, else UTA margin-loans)" },
+  { key: "borrowAPR",           label: "Borrow APR",     title: "Gate Earn Uni borrow APR % (est_rate × 100)" },
   { key: "spread",           label: "Spread",            title: "Best spread: (futures − spot) / spot × 100%" },
-  {
-    key: "borrowLiquidity",
-    label: "Available Borrow",
-    title:
-      "Borrow limit ~USDT · token: V2 signed isolated (+ tier / max-borrow) if keys set; else UTA margin-loans only.",
-  },
+  { key: "borrowLiquidity",  label: "Available Borrow",  title: "Gate available borrow (Earn Uni pool converted to USDT)" },
   { key: "exchangeCount",    label: "Exchanges",         title: "Number of exchanges with a match" },
   { key: "nextFundingTime",     label: "Next Funding",   title: "Next funding time for best exchange" },
 ];
@@ -338,12 +318,7 @@ function GroupedTable({
                 </td>
                 {/* Available Borrow */}
                 <td className="px-3 py-2.5 font-mono text-cyan-400 text-xs whitespace-nowrap">
-                  {fmtAvailBorrow(
-                    best.token,
-                    best.borrowLiquidityToken,
-                    best.borrowLiquidityUsdt,
-                    best.borrowPoolFromUta
-                  )}
+                  {fmtAvailBorrow(best.borrowLiquidityToken, best.borrowLiquidityUsdt)}
                 </td>
                 {/* Exchange count */}
                 <td className="px-3 py-2.5 text-center">
@@ -411,12 +386,7 @@ function GroupedTable({
                     {/* Available Borrow — same for all exchanges of a token, show only in first sub-row */}
                     <td className="px-3 py-2 font-mono text-xs text-cyan-400/60 whitespace-nowrap">
                       {idx === 0
-                        ? fmtAvailBorrow(
-                            opp.token,
-                            opp.borrowLiquidityToken,
-                            opp.borrowLiquidityUsdt,
-                            opp.borrowPoolFromUta
-                          )
+                        ? fmtAvailBorrow(opp.borrowLiquidityToken, opp.borrowLiquidityUsdt)
                         : ""}
                     </td>
                     {/* Exchanges count — empty for sub-row */}
@@ -442,15 +412,10 @@ const FLAT_COLUMNS: { key: FlatSortKey; label: string; title?: string }[] = [
   { key: "exchange",            label: "Exchange" },
   { key: "rawFunding",          label: "Raw Funding" },
   { key: "fundingAPR",          label: "Funding APR",    title: "Annualized funding APR (%)" },
-  { key: "borrowAPR",           label: "Borrow APR",     title: "Bitget borrow APR % (V2 isolated with keys, else UTA)" },
+  { key: "borrowAPR",           label: "Borrow APR",     title: "Gate Earn Uni borrow APR % (est_rate × 100)" },
   { key: "spread",          label: "Spread",           title: "(futures − spot) / spot × 100%" },
-  { key: "netAPR",          label: "Net APR",          title: "Net APR = Funding APR − Borrow APR" },
-  {
-    key: "borrowLiquidity",
-    label: "Available Borrow",
-    title:
-      "Borrow limit ~USDT · token: V2 signed + UTA (see grouped headers).",
-  },
+  { key: "netAPR",          label: "Net APR",          title: "Net APR = Funding APR − Borrow APR − Trading fees" },
+  { key: "borrowLiquidity", label: "Available Borrow", title: "Gate available borrow (Earn Uni pool converted to USDT)" },
   { key: "nextFundingTime", label: "Next Funding" },
 ];
 
@@ -508,12 +473,7 @@ function FlatTable({ rows, sortKey, sortDir, onSort, onRowClick }: FlatTableProp
               {fmtPct(row.netAPR, 2)}
             </td>
             <td className="px-3 py-2.5 font-mono text-cyan-400 text-xs whitespace-nowrap">
-              {fmtAvailBorrow(
-                row.token,
-                row.borrowLiquidityToken,
-                row.borrowLiquidityUsdt,
-                row.borrowPoolFromUta
-              )}
+              {fmtAvailBorrow(row.borrowLiquidityToken, row.borrowLiquidityUsdt)}
             </td>
             <td className="px-3 py-2.5 text-gray-500 text-xs whitespace-nowrap">
               {fmtTime(row.nextFundingTime)}
@@ -533,6 +493,27 @@ export function ArbitrageTable({ rows, search, onRowClick }: ArbitrageTableProps
   const [flatSortKey, setFlatSortKey] = useState<FlatSortKey>("netAPR");
   const [sortDir, setSortDir] = useState<SortDir>("desc");
   const [expandedTokens, setExpandedTokens] = useState<Set<string>>(new Set());
+  const [minLiquidityUsd, setMinLiquidityUsd] = useState<number>(0);
+
+  // Load/persist minimum liquidity filter (USD)
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(MIN_LIQUIDITY_USD_LS_KEY);
+      if (!raw) return;
+      const n = Number(raw);
+      if (!Number.isNaN(n) && n >= 0) setMinLiquidityUsd(n);
+    } catch {
+      // ignore
+    }
+  }, []);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(MIN_LIQUIDITY_USD_LS_KEY, String(minLiquidityUsd));
+    } catch {
+      // ignore
+    }
+  }, [minLiquidityUsd]);
 
   function toggleExpand(token: string) {
     setExpandedTokens((prev) => {
@@ -562,13 +543,19 @@ export function ArbitrageTable({ rows, search, onRowClick }: ArbitrageTableProps
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
-    if (!q) return rows;
-    return rows.filter(
-      (r) =>
-        r.token.toLowerCase().includes(q) ||
-        r.exchange.toLowerCase().includes(q)
-    );
-  }, [rows, search]);
+    return rows.filter((r) => {
+      if (q) {
+        const ok =
+          r.token.toLowerCase().includes(q) || r.exchange.toLowerCase().includes(q);
+        if (!ok) return false;
+      }
+      if (minLiquidityUsd > 0) {
+        const liq = r.borrowLiquidityUsdt ?? 0;
+        if (liq < minLiquidityUsd) return false;
+      }
+      return true;
+    });
+  }, [rows, search, minLiquidityUsd]);
 
   const groups = useMemo(
     () => sortGroups(buildGroups(filtered), groupSortKey, sortDir),
@@ -631,6 +618,22 @@ export function ArbitrageTable({ rows, search, onRowClick }: ArbitrageTableProps
             ? `${groups.length} tokens · ${rows.length} pairs`
             : `${flatRows.length} rows${flatRows.length !== rows.length ? ` (${rows.length} total)` : ""}`}
         </span>
+
+        <div className="ml-auto flex items-center gap-2">
+          <span className="text-xs text-gray-500">Min Liquidity $</span>
+          <input
+            type="number"
+            min={0}
+            step={100}
+            value={minLiquidityUsd}
+            onChange={(e) =>
+              setMinLiquidityUsd(Math.max(0, Number(e.target.value) || 0))
+            }
+            placeholder="0"
+            title="Hide rows where Available Borrow (USDT) is below this threshold"
+            className="w-36 bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-xs text-white placeholder-gray-500 focus:outline-none focus:border-blue-500 transition-colors"
+          />
+        </div>
       </div>
 
       <div className="overflow-x-auto">

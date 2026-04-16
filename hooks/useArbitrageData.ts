@@ -6,18 +6,25 @@ import { useHistory } from "./useHistory";
 import { useEffect } from "react";
 
 const REFETCH_INTERVAL_MS = 30_000; // 30 seconds
-/** Abort slow scans so UI can show error instead of infinite spinner */
-const SCAN_FETCH_TIMEOUT_MS = Math.max(
-  30_000,
-  parseInt(process.env.NEXT_PUBLIC_SCAN_TIMEOUT_MS ?? "120000", 10) || 120_000
-);
+/** Browser fetch has no default timeout; local full scan + Bitget margin-loans can exceed 2 min. */
+const SCAN_FETCH_TIMEOUT_MS = 360_000;
 
 async function fetchScan(): Promise<ScanResponse> {
-  const res = await fetch("/api/scan", {
-    signal: AbortSignal.timeout(SCAN_FETCH_TIMEOUT_MS),
-  });
-  if (!res.ok) throw new Error(`Scan API error: ${res.status}`);
-  return res.json();
+  try {
+    const res = await fetch("/api/scan", {
+      signal: AbortSignal.timeout(SCAN_FETCH_TIMEOUT_MS),
+    });
+    if (!res.ok) throw new Error(`Scan API error: ${res.status}`);
+    return res.json();
+  } catch (e) {
+    const name = e instanceof Error ? e.name : "";
+    if (name === "AbortError" || name === "TimeoutError") {
+      throw new Error(
+        `Scan timed out after ${SCAN_FETCH_TIMEOUT_MS / 1000}s — try upstream mirror (SCAN_UPSTREAM_URL) or Retry`
+      );
+    }
+    throw e;
+  }
 }
 
 export function useArbitrageData() {
@@ -50,7 +57,6 @@ export function useArbitrageData() {
   return {
     rows: query.data?.rows ?? [],
     fetchedAt: query.data?.fetchedAt ?? 0,
-    bitgetBorrow: query.data?.bitgetBorrow ?? null,
     errors: query.data?.errors ?? {},
     isLoading: query.isLoading,
     isFetching: query.isFetching,

@@ -5,7 +5,6 @@ import {
   fetchWithTimeout,
 } from "./types";
 import { GateMarginPair, GateBorrowInfo } from "@/types";
-import { getGateRateCap } from "@/lib/gate-rate-cap";
 
 // ─── Margin pairs ───────────────────────────────────────────────────────────
 
@@ -41,26 +40,48 @@ interface GateSpotTicker {
   highest_bid: string;
 }
 
+interface GateEarnUniRate {
+  currency: string; // e.g. "BTC"
+  est_rate: string; // annual decimal, e.g. "0.034953"
+}
+
+interface GateEarnUniCurrency {
+  currency: string; // e.g. "BTC"
+  amount: string; // total in pool
+  lent_amount: string; // already lent out
+  frozen_amount: string; // frozen / reserved
+}
+
 /**
  * Fetch Gate isolated-margin borrow info per token.
  *
- * Borrow APR and available liquidity come from the Playwright scraper
- * (real VIP 0 values from the Gate isolated-margin rate-cap page).
- * Spot prices are still fetched from the public Gate API for spread calculation.
+ * Public data source (fast, no auth):
+ * - Borrow APR: GET /api/v4/earn/uni/rate (est_rate annual decimal)
+ * - Liquidity:  GET /api/v4/earn/uni/currencies (available = amount - lent_amount - frozen_amount)
+ * - Spot price: GET /api/v4/spot/tickers (for USDT conversion)
  */
 export async function fetchGateBorrowInfo(
   tokens: string[]
 ): Promise<Map<string, GateBorrowInfo>> {
-  const [rateCapResult, spotResult] = await Promise.allSettled([
-    getGateRateCap(),
-    fetchWithTimeout("https://api.gateio.ws/api/v4/spot/tickers").then((r) =>
-      r.ok ? (r.json() as Promise<GateSpotTicker[]>) : ([] as GateSpotTicker[])
+  const [ratesRes, currenciesRes, spotRes] = await Promise.allSettled([
+    fetchWithTimeout("https://api.gateio.ws/api/v4/earn/uni/rate", {}, 15_000).then(
+      (r) => (r.ok ? (r.json() as Promise<GateEarnUniRate[]>) : ([] as GateEarnUniRate[]))
+    ),
+    fetchWithTimeout(
+      "https://api.gateio.ws/api/v4/earn/uni/currencies",
+      {},
+      15_000
+    ).then((r) =>
+      r.ok ? (r.json() as Promise<GateEarnUniCurrency[]>) : ([] as GateEarnUniCurrency[])
+    ),
+    fetchWithTimeout("https://api.gateio.ws/api/v4/spot/tickers", {}, 15_000).then(
+      (r) => (r.ok ? (r.json() as Promise<GateSpotTicker[]>) : ([] as GateSpotTicker[]))
     ),
   ]);
 
   const spotMap = new Map<string, number>();
-  if (spotResult.status === "fulfilled") {
-    for (const item of spotResult.value) {
+  if (spotRes.status === "fulfilled") {
+    for (const item of spotRes.value) {
       if (item.currency_pair.endsWith("_USDT")) {
         const base = item.currency_pair.replace("_USDT", "").toUpperCase();
         spotMap.set(base, parseFloat(item.last || "0"));
@@ -68,22 +89,46 @@ export async function fetchGateBorrowInfo(
     }
   }
 
-  const scraped =
-    rateCapResult.status === "fulfilled"
-      ? rateCapResult.value
-      : new Map<string, import("@/lib/gate-rate-cap").GateRateCapEntry>();
+  const aprMap = new Map<string, number>();
+  if (ratesRes.status === "fulfilled") {
+    for (const item of ratesRes.value) {
+      const upper = (item.currency || "").toUpperCase();
+      if (!upper) continue;
+      const est = parseFloat(item.est_rate || "0");
+      if (!Number.isFinite(est) || est <= 0) continue;
+      aprMap.set(upper, est * 100);
+    }
+  }
+
+  const availableTokenMap = new Map<string, number>();
+  if (currenciesRes.status === "fulfilled") {
+    for (const item of currenciesRes.value) {
+      const upper = (item.currency || "").toUpperCase();
+      if (!upper) continue;
+      const amount = parseFloat(item.amount || "0");
+      const lent = parseFloat(item.lent_amount || "0");
+      const frozen = parseFloat(item.frozen_amount || "0");
+      if (![amount, lent, frozen].every((n) => Number.isFinite(n))) continue;
+      const available = amount - lent - frozen;
+      if (Number.isFinite(available) && available >= 0) {
+        availableTokenMap.set(upper, available);
+      }
+    }
+  }
 
   const result = new Map<string, GateBorrowInfo>();
   for (const token of tokens) {
     const upper = token.toUpperCase();
-    const entry = scraped.get(upper);
     const spotPrice = spotMap.get(upper) ?? 0;
+    const liquidityToken = availableTokenMap.get(upper);
+    const liquidityUsdt =
+      liquidityToken != null && spotPrice > 0 ? liquidityToken * spotPrice : null;
 
     result.set(upper, {
       currency: upper,
-      borrowAPR: entry?.borrowApr ?? 0,
-      liquidityToken: entry?.liquidityTokenRaw ?? null,
-      liquidityUsdt: entry?.liquidityUsdtRaw ?? null,
+      borrowAPR: aprMap.get(upper) ?? 0,
+      liquidityToken: liquidityToken ?? null,
+      liquidityUsdt,
       spotPrice,
     });
   }

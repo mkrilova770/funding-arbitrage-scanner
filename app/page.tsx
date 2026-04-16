@@ -22,13 +22,11 @@ const FUTURES_EXCHANGES_DEFAULT = [
 ] as const;
 
 const EXCHANGE_TOGGLES_LS_KEY = "fa.enabledFuturesExchanges.v1";
-const MIN_BORROW_USD_LS_KEY = "fa.minAvailableBorrowUsd.v1";
 
 function Dashboard() {
   const {
     rows,
     fetchedAt,
-    bitgetBorrow,
     errors,
     isLoading,
     isFetching,
@@ -43,7 +41,6 @@ function Dashboard() {
   const [enabledExchanges, setEnabledExchanges] = useState<Set<string>>(
     () => new Set(FUTURES_EXCHANGES_DEFAULT)
   );
-  const [minBorrowUsd, setMinBorrowUsd] = useState<number>(0);
 
   useEffect(() => {
     try {
@@ -68,26 +65,6 @@ function Dashboard() {
     }
   }, [enabledExchanges]);
 
-  // Load/persist minimum Available Borrow filter (USD)
-  useEffect(() => {
-    try {
-      const raw = localStorage.getItem(MIN_BORROW_USD_LS_KEY);
-      if (!raw) return;
-      const n = Number(raw);
-      if (!Number.isNaN(n) && n >= 0) setMinBorrowUsd(n);
-    } catch {
-      // ignore
-    }
-  }, []);
-
-  useEffect(() => {
-    try {
-      localStorage.setItem(MIN_BORROW_USD_LS_KEY, String(minBorrowUsd));
-    } catch {
-      // ignore
-    }
-  }, [minBorrowUsd]);
-
   const availableExchanges = useMemo(() => {
     const set = new Set<string>();
     for (const r of rows) set.add(r.exchange);
@@ -98,11 +75,9 @@ function Dashboard() {
   const filteredRows = useMemo(() => {
     return rows.filter((r) => {
       if (!enabledExchanges.has(r.exchange)) return false;
-      if (minBorrowUsd <= 0) return true;
-      const liq = r.borrowLiquidityUsdt ?? 0;
-      return liq >= minBorrowUsd;
+      return true;
     });
-  }, [rows, enabledExchanges, minBorrowUsd]);
+  }, [rows, enabledExchanges]);
 
   return (
     <div className="min-h-screen bg-[#0a0e17]">
@@ -118,7 +93,7 @@ function Dashboard() {
                 Funding Arbitrage Scanner
               </h1>
               <p className="text-gray-500 text-xs leading-tight">
-                Bitget isolated margin short · Long → Futures
+                Gate isolated margin short · Long → Futures
               </p>
             </div>
           </div>
@@ -130,16 +105,6 @@ function Dashboard() {
               onChange={(e) => setSearch(e.target.value)}
               placeholder="Search token or exchange..."
               className="flex-1 bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-blue-500 transition-colors"
-            />
-            <input
-              type="number"
-              min={0}
-              step={100}
-              value={minBorrowUsd}
-              onChange={(e) => setMinBorrowUsd(Math.max(0, Number(e.target.value) || 0))}
-              placeholder="Min borrow $"
-              title="Filter tokens by Bitget Available Borrow (USDT equivalent) ≥ this amount"
-              className="w-32 bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-blue-500 transition-colors"
             />
             <div className="relative">
               <button
@@ -223,7 +188,6 @@ function Dashboard() {
           isError={isError}
           rowCount={rows.length}
           errors={errors}
-          bitgetBorrow={bitgetBorrow}
         />
       </div>
 
@@ -234,8 +198,7 @@ function Dashboard() {
             <span className="text-white">Long →</span> Futures exchange (always)
           </span>
           <span>
-            <span className="text-white">Short →</span> Bitget isolated margin
-            (always)
+            <span className="text-white">Short →</span> Gate isolated margin (always)
           </span>
           <span className="text-gray-700">·</span>
           <span>
@@ -244,8 +207,7 @@ function Dashboard() {
           </span>
           <span className="text-gray-700">·</span>
           <span>
-            <span className="text-green-400">Net APR</span> = Funding APR −
-            Borrow APR
+            <span className="text-green-400">Net APR</span> = Funding APR − Borrow APR − Trading fees
           </span>
           <span className="text-gray-700">·</span>
           <span>
@@ -265,7 +227,8 @@ function Dashboard() {
                 Loading data from 10 exchanges...
               </div>
               <div className="text-gray-600 text-xs">
-                First load usually under a minute; if it stalls, check API keys and terminal logs
+                First load usually takes a few seconds (Gate Earn Uni + 10 exchanges).
+                If upstream is slow, you can still use SCAN_UPSTREAM_URL in .env.local as a mirror.
               </div>
             </div>
           ) : isError ? (

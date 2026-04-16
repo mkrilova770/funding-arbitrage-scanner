@@ -84,7 +84,7 @@ export function TokenModal({ row, history, onClose }: TokenModalProps) {
               {row.exchange} futures
             </span>
             <span className="text-xs text-gray-500 bg-gray-800 px-2 py-0.5 rounded">
-              Short → Bitget
+              Short → Gate
             </span>
           </div>
           <button
@@ -121,9 +121,9 @@ export function TokenModal({ row, history, onClose }: TokenModalProps) {
           {/* Metrics table */}
           <div className="mb-6">
             <MetricRow label="Long (futures)" value={`${row.exchange} — ${row.token}/USDT PERP`} />
-            <MetricRow label="Short (margin)" value="Bitget isolated margin" />
+            <MetricRow label="Short (margin)" value="Gate isolated margin" />
             <MetricRow label="Futures price" value={fmtPrice(row.futuresPrice)} />
-            <MetricRow label="Bitget spot price" value={fmtPrice(row.spotPrice)} />
+            <MetricRow label="Gate spot price" value={fmtPrice(row.spotPrice)} />
             <MetricRow
               label="Raw funding rate"
               value={`${fmt(row.rawFunding * 100, 6)}% / ${row.intervalHours}h`}
@@ -134,11 +134,8 @@ export function TokenModal({ row, history, onClose }: TokenModalProps) {
               className={row.spread >= 0 ? "text-blue-400" : "text-red-400"}
             />
             <MetricRow
-              label="Pool cap (Bitget public)"
+              label="Available borrow (Gate)"
               value={(() => {
-                if (row.borrowPoolFromUta === false) {
-                  return "— (no Bitget borrow limit from current APIs / keys)";
-                }
                 const usd = row.borrowLiquidityUsdt;
                 const native = row.borrowLiquidityToken;
                 if (!usd && !native) return "—";
@@ -158,6 +155,11 @@ export function TokenModal({ row, history, onClose }: TokenModalProps) {
                 return nativeStr || usdStr || "—";
               })()}
               className="text-gray-300"
+            />
+            <MetricRow
+              label="Trading fees (round-trip)"
+              value={fmtPct(row.tradingFees)}
+              className="text-gray-400"
             />
             <MetricRow
               label="Next funding"

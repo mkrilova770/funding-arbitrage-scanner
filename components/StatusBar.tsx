@@ -1,7 +1,7 @@
 "use client";
 
 import { format } from "date-fns";
-import type { BitgetScanBorrowMeta } from "@/types";
+import { useEffect, useMemo, useState } from "react";
 
 interface StatusBarProps {
   fetchedAt: number;
@@ -9,7 +9,6 @@ interface StatusBarProps {
   isError: boolean;
   rowCount: number;
   errors: Record<string, string>;
-  bitgetBorrow?: BitgetScanBorrowMeta | null;
 }
 
 export function StatusBar({
@@ -18,74 +17,19 @@ export function StatusBar({
   isError,
   rowCount,
   errors,
-  bitgetBorrow,
 }: StatusBarProps) {
   const errorKeys = Object.keys(errors);
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, []);
 
-  const bitgetMarginBlock =
-    bitgetBorrow?.marginSignedBlocked === "no_margin_account"
-      ? {
-          text: "Bitget: маржа не открыта — лимиты займа неполные",
-          className:
-            "bg-rose-900/45 text-rose-200 border border-rose-600/60",
-          title:
-            (errors["Bitget.MarginAccount"] ??
-              "Активируйте маржинальный счёт в Bitget (изолированная маржа), затем обновите скан. См. ошибку Bitget.MarginAccount.") +
-            (bitgetBorrow.marginSignedProbeDetail
-              ? ` API: ${bitgetBorrow.marginSignedProbeDetail}`
-              : ""),
-        }
-      : bitgetBorrow?.marginSignedBlocked === "bad_auth"
-        ? {
-            text: "Bitget: ошибка API ключей",
-            className:
-              "bg-rose-900/45 text-rose-200 border border-rose-600/60",
-            title:
-              (errors["Bitget.ApiAuth"] ?? "Проверьте BITGET_API_KEY, секрет и passphrase.") +
-              (bitgetBorrow.marginSignedProbeDetail
-                ? ` ${bitgetBorrow.marginSignedProbeDetail}`
-                : ""),
-          }
-        : null;
-
-  const bitgetLabel =
-    bitgetMarginBlock ??
-    (bitgetBorrow && bitgetBorrow.isolatedMarginTokens > 0
-      ? bitgetBorrow.borrowFetchOk
-        ? {
-            text: "Bitget data: public API (fast)",
-            className:
-              "bg-emerald-900/40 text-emerald-400 border border-emerald-700/50",
-            title: (() => {
-              const iso = bitgetBorrow.isolatedMarginTokens;
-              const lim =
-                bitgetBorrow.utaBorrowLimits != null
-                  ? bitgetBorrow.utaBorrowLimits
-                  : bitgetBorrow.loansWithRateOrPool;
-              const isl = bitgetBorrow.isolatedSignedLimits ?? 0;
-              if (
-                bitgetBorrow.signedBorrowConfigured &&
-                !bitgetBorrow.marginSignedBlocked
-              ) {
-                return `Pairs: /api/v2/margin/currencies. Borrow: signed V2 isolated interest+tier+max-borrow (${isl}/${iso}), UTA margin-loans (~${lim} UTA-only). Spot tickers.`;
-              }
-              return `Pairs: /api/v2/margin/currencies. Borrow: UTA margin-loans only (~${lim}/${iso} with limit) — add BITGET_* keys + passphrase for full isolated pool. Spot tickers.`;
-            })(),
-          }
-        : {
-            text: "Bitget borrow: partial / error",
-            className:
-              "bg-amber-900/40 text-amber-400 border border-amber-700/50",
-            title: "Margin pairs loaded; borrow fetch failed — check Bitget.Borrow in errors.",
-          }
-      : bitgetBorrow
-        ? {
-            text: "Bitget borrow: unavailable",
-            className:
-              "bg-amber-900/40 text-amber-400 border border-amber-700/50",
-            title: "No isolated-margin USDT bases or margin currencies request failed.",
-          }
-        : null);
+  const lastUpdatedSeconds = useMemo(() => {
+    if (!fetchedAt) return null;
+    const s = Math.floor((now - fetchedAt) / 1000);
+    return s >= 0 ? s : 0;
+  }, [now, fetchedAt]);
 
   return (
     <div className="flex items-center gap-4 text-xs text-gray-500 flex-wrap">
@@ -110,18 +54,15 @@ export function StatusBar({
         </span>
       </div>
 
-      {rowCount > 0 && (
+      {lastUpdatedSeconds != null && !isFetching && (
         <span className="text-gray-600">
-          {rowCount} opportunities found
+          Last updated: {lastUpdatedSeconds}s ago
         </span>
       )}
 
-      {bitgetLabel && (
-        <span
-          className={`px-2 py-0.5 rounded text-[11px] font-medium ${bitgetLabel.className}`}
-          title={bitgetLabel.title}
-        >
-          {bitgetLabel.text}
+      {rowCount > 0 && (
+        <span className="text-gray-600">
+          {rowCount} opportunities found
         </span>
       )}
 

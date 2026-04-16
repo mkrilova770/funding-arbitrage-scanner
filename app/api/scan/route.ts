@@ -1,80 +1,24 @@
 import { NextResponse } from "next/server";
-import { GateFuturesAdapter } from "@/lib/exchanges/gate";
+import {
+  GateFuturesAdapter,
+  fetchGateBorrowInfo,
+  fetchGateMarginPairs,
+} from "@/lib/exchanges/gate";
 import { BinanceAdapter } from "@/lib/exchanges/binance";
 import { OkxAdapter } from "@/lib/exchanges/okx";
 import { BybitAdapter } from "@/lib/exchanges/bybit";
-import {
-  BitgetAdapter,
-  fetchBitgetIsolatedMarginBases,
-  fetchBitgetBorrowInfo,
-} from "@/lib/exchanges/bitget";
+import { BitgetAdapter } from "@/lib/exchanges/bitget";
 import { BingXAdapter } from "@/lib/exchanges/bingx";
 import { XtAdapter } from "@/lib/exchanges/xt";
 import { MexcAdapter } from "@/lib/exchanges/mexc";
 import { BitMartAdapter } from "@/lib/exchanges/bitmart";
 import { KuCoinAdapter } from "@/lib/exchanges/kucoin";
 import { ExchangeAdapter, toFundingAPR, FundingInfo } from "@/lib/exchanges/types";
-import {
-  ArbitrageRow,
-  BitgetBorrowInfo,
-  BitgetMarginPair,
-  BitgetMarginSignedBlockReason,
-  BitgetScanBorrowMeta,
-  ScanResponse,
-} from "@/types";
-
-function bitgetBorrowMeta(
-  isolatedMarginTokens: number,
-  borrowMap: Map<string, BitgetBorrowInfo>,
-  borrowFetchOk: boolean,
-  signedBorrowConfigured: boolean,
-  marginSignedBlocked: BitgetMarginSignedBlockReason | null,
-  marginSignedProbeDetail: string
-): BitgetScanBorrowMeta {
-  let loansWithRateOrPool = 0;
-  let utaBorrowLimits = 0;
-  let isolatedPublicLimits = 0;
-  let isolatedSignedLimits = 0;
-  for (const v of borrowMap.values()) {
-    if (v.borrowAPR > 0 || v.liquidityToken != null) loansWithRateOrPool++;
-    if (v.liquiditySource === "uta-v3-public" && v.liquidityToken != null && v.liquidityToken > 0) {
-      utaBorrowLimits++;
-    }
-    if (
-      v.liquiditySource === "isolated-v1-public" &&
-      v.liquidityToken != null &&
-      v.liquidityToken > 0
-    ) {
-      isolatedPublicLimits++;
-    }
-    if (
-      v.liquiditySource === "isolated-v2-private" &&
-      v.liquidityToken != null &&
-      v.liquidityToken > 0
-    ) {
-      isolatedSignedLimits++;
-    }
-  }
-  return {
-    source:
-      signedBorrowConfigured && !marginSignedBlocked
-        ? "isolated-v2-private+fallback"
-        : "uta-v3-public",
-    signedBorrowConfigured,
-    marginSignedBlocked: marginSignedBlocked ?? undefined,
-    marginSignedProbeDetail: marginSignedProbeDetail || undefined,
-    isolatedMarginTokens,
-    loansWithRateOrPool,
-    isolatedSignedLimits,
-    isolatedPublicLimits,
-    utaBorrowLimits,
-    borrowFetchOk,
-  };
-}
+import { ArbitrageRow, ScanResponse } from "@/types";
+import { getTradingFeesPercent } from "@/lib/fees";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
-/** Allow long first scan (Bitget × N + exchanges); Vercel / hosted limits may still apply. */
 export const maxDuration = 300;
 
 /**
@@ -127,7 +71,6 @@ async function tryRespondWithUpstreamScanCopy(): Promise<NextResponse | null> {
         rows: [],
         fetchedAt: errFetchedAt,
         errors: { "Scan.Upstream": msg },
-        bitgetBorrow: null,
       },
       {
         status: 502,
@@ -154,37 +97,34 @@ const adapters: ExchangeAdapter[] = [
   new KuCoinAdapter(),
 ];
 
-export async function GET() {
-  const upstream = await tryRespondWithUpstreamScanCopy();
-  if (upstream) return upstream;
+const SWR_TTL_MS = Math.max(
+  5_000,
+  parseInt(process.env.SCAN_SWR_TTL_MS ?? "45000", 10) || 45_000
+);
 
+let lastGoodResponse: ScanResponse | null = null;
+let refreshInProgress: Promise<void> | null = null;
+
+async function buildScanResponse(): Promise<ScanResponse> {
   const errors: Record<string, string> = {};
   const fetchedAt = Date.now();
 
-  // Step 1: fetch Bitget isolated-margin USDT bases (base borrowable)
-  let bitgetPairs: BitgetMarginPair[] = [];
+  // Step 1: fetch Gate isolated-margin USDT bases (borrow side universe)
+  let gatePairs: { base: string; id: string }[] = [];
   try {
-    const pairs = await fetchBitgetIsolatedMarginBases();
-    bitgetPairs = pairs;
+    const pairs = await fetchGateMarginPairs();
+    gatePairs = pairs.map((p) => ({ base: p.base, id: p.id }));
   } catch (err) {
-    errors["Bitget.MarginPairs"] = err instanceof Error ? err.message : String(err);
-    return NextResponse.json(
-      {
-        rows: [],
-        fetchedAt,
-        errors,
-        bitgetBorrow: bitgetBorrowMeta(0, new Map(), false, false, null, ""),
-      },
-      { status: 200 }
-    );
+    errors["Gate.MarginPairs"] = err instanceof Error ? err.message : String(err);
+    return { rows: [], fetchedAt, errors };
   }
 
-  const bitgetTokens = bitgetPairs.map((p) => p.base.toUpperCase());
-  const tokenSet = new Set(bitgetTokens);
+  const gateTokens = [...new Set(gatePairs.map((p) => p.base.toUpperCase()))];
+  const tokenSet = new Set(gateTokens);
 
   // Step 2: fetch borrow info + all exchange funding in parallel
   const [borrowResult, ...adapterResults] = await Promise.allSettled([
-    fetchBitgetBorrowInfo(bitgetPairs),
+    fetchGateBorrowInfo(gateTokens),
     ...adapters.map((adapter) =>
       adapter
         .fetchFunding(tokenSet)
@@ -196,32 +136,16 @@ export async function GET() {
     ),
   ]);
 
-  const borrowMap = new Map<string, BitgetBorrowInfo>();
-  let signedBorrowConfigured = false;
-  let marginSignedBlocked: BitgetMarginSignedBlockReason | null = null;
-  let marginSignedProbeDetail = "";
+  const borrowMap = new Map<
+    string,
+    { borrowAPR: number; liquidityToken: number | null; liquidityUsdt: number | null; spotPrice: number }
+  >();
   if (borrowResult.status === "fulfilled") {
-    signedBorrowConfigured = borrowResult.value.signedBorrowConfigured;
-    marginSignedBlocked = borrowResult.value.marginSignedBlocked;
-    marginSignedProbeDetail = borrowResult.value.marginSignedProbeMsg;
-    for (const [token, info] of borrowResult.value.borrowByToken.entries()) {
+    for (const [token, info] of borrowResult.value.entries()) {
       borrowMap.set(token, info);
     }
-    if (marginSignedBlocked === "no_margin_account") {
-      errors["Bitget.MarginAccount"] =
-        "Маржинальный счёт Bitget не открыт (ответ API: счёт маржи не существует). В приложении или на сайте Bitget активируйте маржинальную торговлю (изолированную margin). После этого перезапустите скан — иначе лимиты займа часто только из UTA и показываются как «без лимита».";
-      if (marginSignedProbeDetail) {
-        errors["Bitget.MarginAccount"] += ` Детали: ${marginSignedProbeDetail}.`;
-      }
-    } else if (marginSignedBlocked === "bad_auth") {
-      errors["Bitget.ApiAuth"] =
-        "Ошибка подписи Bitget (неверный API key, secret или passphrase в .env.local). Проверьте ключи и passphrase.";
-      if (marginSignedProbeDetail) {
-        errors["Bitget.ApiAuth"] += ` ${marginSignedProbeDetail}`;
-      }
-    }
   } else {
-    errors["Bitget.Borrow"] =
+    errors["Gate.Borrow"] =
       borrowResult.reason instanceof Error
         ? borrowResult.reason.message
         : String(borrowResult.reason);
@@ -244,16 +168,12 @@ export async function GET() {
   // Step 3: build arbitrage rows
   const rows: ArbitrageRow[] = [];
 
-  for (const token of bitgetTokens) {
+  for (const token of gateTokens) {
     const borrow = borrowMap.get(token);
     const borrowAPR = borrow?.borrowAPR ?? 0;
     const spotPrice = borrow?.spotPrice ?? 0;
     const liquidityToken = borrow?.liquidityToken ?? null;
     const liquidityUsdt = borrow?.liquidityUsdt ?? null;
-    const borrowPoolFromUta =
-      liquidityToken != null &&
-      liquidityToken > 0;
-
     for (const [exchangeName, fundingMap] of exchangeFundingMaps.entries()) {
       const funding = fundingMap.get(token);
       if (!funding) continue;
@@ -265,7 +185,8 @@ export async function GET() {
           ? ((funding.markPrice - spotPrice) / spotPrice) * 100
           : 0;
 
-      const netAPR = fundingAPR - borrowAPR;
+      const tradingFees = getTradingFeesPercent(exchangeName);
+      const netAPR = fundingAPR - borrowAPR - tradingFees;
 
       rows.push({
         id: `${token}-${exchangeName}`,
@@ -275,13 +196,14 @@ export async function GET() {
         intervalHours: funding.intervalHours,
         fundingAPR,
         borrowAPR,
+        tradingFees,
         netAPR,
         spread,
         futuresPrice: funding.markPrice,
         spotPrice,
         borrowLiquidityToken: liquidityToken,
         borrowLiquidityUsdt: liquidityUsdt,
-        borrowPoolFromUta,
+        borrowPoolFromUta: liquidityToken != null && liquidityToken > 0,
         nextFundingTime: funding.nextFundingTime,
         updatedAt: fetchedAt,
       });
@@ -291,18 +213,53 @@ export async function GET() {
   // Sort by netAPR descending by default
   rows.sort((a, b) => b.netAPR - a.netAPR);
 
-  const response: ScanResponse = {
-    rows,
-    fetchedAt,
-    errors,
-    bitgetBorrow: bitgetBorrowMeta(
-      bitgetTokens.length,
-      borrowMap,
-      borrowResult.status === "fulfilled",
-      signedBorrowConfigured,
-      marginSignedBlocked,
-      marginSignedProbeDetail
-    ),
-  };
-  return NextResponse.json(response);
+  return { rows, fetchedAt, errors };
+}
+
+export async function GET() {
+  const upstream = await tryRespondWithUpstreamScanCopy();
+  if (upstream) return upstream;
+
+  const now = Date.now();
+  const cached = lastGoodResponse;
+  const ageMs = cached ? now - cached.fetchedAt : null;
+  const isFresh = cached && ageMs != null && ageMs < SWR_TTL_MS;
+
+  // Fresh cache: return immediately
+  if (cached && isFresh) {
+    return NextResponse.json(cached, {
+      headers: {
+        "X-Scan-Cache": "hit",
+        "X-Scan-Cache-Age-Ms": String(ageMs),
+      },
+    });
+  }
+
+  // Stale cache: return immediately and refresh in background
+  if (cached && !isFresh) {
+    if (!refreshInProgress) {
+      refreshInProgress = buildScanResponse()
+        .then((data) => {
+          lastGoodResponse = data;
+        })
+        .catch((e) => {
+          const msg = e instanceof Error ? e.message : String(e);
+          console.error(`[scan] background refresh failed: ${msg}`);
+        })
+        .finally(() => {
+          refreshInProgress = null;
+        });
+    }
+    return NextResponse.json(cached, {
+      headers: {
+        "X-Scan-Cache": "stale",
+        "X-Scan-Cache-Age-Ms": String(ageMs ?? ""),
+      },
+    });
+  }
+
+  // Cold start: build synchronously
+  const data = await buildScanResponse();
+  lastGoodResponse = data;
+  return NextResponse.json(data, { headers: { "X-Scan-Cache": "miss" } });
 }

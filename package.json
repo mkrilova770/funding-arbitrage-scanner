@@ -1,22 +1,17 @@
 {
-  "name": "funding-arb-bitget",
+  "name": "crs2",
   "version": "0.1.0",
   "private": true,
   "scripts": {
     "dev": "next dev",
+    "dev:3002": "next dev -p 3002",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint",
-    "railway:whoami": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/railway-with-env.ps1 whoami",
-    "railway:up": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/railway-with-env.ps1 up --ci",
-    "railway:up:detach": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/railway-with-env.ps1 up -d",
-    "railway:logs": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/railway-with-env.ps1 logs",
-    "railway:redeploy": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/railway-with-env.ps1 redeploy"
+    "lint": "eslint"
   },
   "dependencies": {
     "@tanstack/react-query": "^5.95.2",
     "date-fns": "^4.1.0",
-    "https-proxy-agent": "^7.0.6",
     "next": "16.2.1",
     "react": "19.2.4",
     "react-dom": "19.2.4",

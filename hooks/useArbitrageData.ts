@@ -36,14 +36,7 @@ export function useArbitrageData() {
     refetchInterval: REFETCH_INTERVAL_MS,
     refetchIntervalInBackground: true,
     staleTime: REFETCH_INTERVAL_MS,
-    retry: (failureCount, err) => {
-      const name = err instanceof Error ? err.name : "";
-      const msg = err instanceof Error ? err.message : String(err);
-      if (name === "AbortError" || msg.includes("aborted") || msg.includes("timeout")) {
-        return false;
-      }
-      return failureCount < 3;
-    },
+    retry: 3,
     retryDelay: (attempt) => Math.min(1000 * 2 ** attempt, 10000),
   });
 

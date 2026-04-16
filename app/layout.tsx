@@ -3,7 +3,8 @@ import "./globals.css";
 
 export const metadata: Metadata = {
   title: "Funding Arbitrage Scanner",
-  description: "Gate isolated margin vs USDT perpetual futures funding arbitrage",
+  description:
+    "Gate isolated margin short vs USDT perpetual futures funding arbitrage",
 };
 
 export default function RootLayout({

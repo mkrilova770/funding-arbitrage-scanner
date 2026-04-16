@@ -4,10 +4,6 @@ import { ArbitrageRow, TokenHistory } from "@/types";
 import { MiniChart } from "./charts/MiniChart";
 import { format, formatDistanceToNow } from "date-fns";
 import { useEffect } from "react";
-import {
-  formatUsdBorrowLiquidity,
-  formatTokenBorrowLiquidity,
-} from "@/lib/liquidity-display";
 
 interface TokenModalProps {
   row: ArbitrageRow;
@@ -142,15 +138,21 @@ export function TokenModal({ row, history, onClose }: TokenModalProps) {
               value={(() => {
                 const usd = row.borrowLiquidityUsdt;
                 const native = row.borrowLiquidityToken;
-                if (usd == null && native == null) return "—";
-                const usdStr =
-                  usd != null ? formatUsdBorrowLiquidity(usd) : null;
-                const nativeStr =
-                  native != null
-                    ? `${formatTokenBorrowLiquidity(native)} ${row.token}`
-                    : "";
-                if (usdStr && nativeStr) return `${usdStr} · ${nativeStr}`;
-                return usdStr || nativeStr || "—";
+                if (!usd && !native) return "—";
+                const usdStr = usd != null
+                  ? usd >= 1_000_000
+                    ? `$${(usd / 1_000_000).toFixed(1)}M`
+                    : `$${(usd / 1_000).toFixed(0)}K`
+                  : null;
+                let nativeStr = "";
+                if (native != null) {
+                  if (native >= 1_000_000) nativeStr = `${(native / 1_000_000).toFixed(2)}M ${row.token}`;
+                  else if (native >= 1_000) nativeStr = `${(native / 1_000).toFixed(1)}K ${row.token}`;
+                  else if (native >= 1) nativeStr = `${native.toFixed(2)} ${row.token}`;
+                  else nativeStr = `${native.toPrecision(3)} ${row.token}`;
+                }
+                if (nativeStr && usdStr) return `${nativeStr} (${usdStr})`;
+                return nativeStr || usdStr || "—";
               })()}
               className="text-gray-300"
             />

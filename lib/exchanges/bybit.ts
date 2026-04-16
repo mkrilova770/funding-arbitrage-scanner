@@ -2,19 +2,8 @@ import {
   ExchangeAdapter,
   FundingInfo,
   normalizeBaseToken,
+  fetchWithTimeout,
 } from "./types";
-import { fetchBinanceBybitWithProxyOrDirect } from "@/lib/exchanges/direct-then-proxy-fetch";
-
-function parseBybitApiBases(): string[] {
-  const raw = process.env.BYBIT_API_BASES?.trim();
-  if (raw) {
-    return raw
-      .split(/[\s,]+/)
-      .map((s) => s.replace(/\/+$/, "").trim())
-      .filter(Boolean);
-  }
-  return ["https://api.bybit.com"];
-}
 
 interface BybitTicker {
   symbol: string;
@@ -38,45 +27,13 @@ export class BybitAdapter implements ExchangeAdapter {
   async fetchFunding(
     filterTokens?: Set<string>
   ): Promise<Map<string, FundingInfo>> {
-    const bases = parseBybitApiBases();
-    let lastRes: Response | null = null;
-    let data: BybitResponse | null = null;
+    const url =
+      "https://api.bybit.com/v5/market/tickers?category=linear";
+    const res = await fetchWithTimeout(url);
+    if (!res.ok) throw new Error(`Bybit HTTP ${res.status}`);
+    const data: BybitResponse = await res.json();
 
-    for (const base of bases) {
-      const url = `${base}/v5/market/tickers?category=linear`;
-      const res = await fetchBinanceBybitWithProxyOrDirect(url, {}, 15_000);
-      lastRes = res;
-      if (!res.ok) {
-        const snippet = await res
-          .clone()
-          .text()
-          .then((t) => t.slice(0, 400))
-          .catch(() => "");
-        console.error(
-          `[Bybit] tickers failed: ${url} → HTTP ${res.status} ${res.statusText} bodySnippet=${JSON.stringify(snippet)}`
-        );
-        continue;
-      }
-      const parsed: BybitResponse = await res.json();
-      if (parsed.retCode !== 0) {
-        console.error(
-          `[Bybit] tickers retCode=${parsed.retCode} url=${url} (try next base if configured)`
-        );
-        continue;
-      }
-      data = parsed;
-      if (base !== bases[0]) {
-        console.log(`[Bybit] tickers OK via ${base}`);
-      }
-      break;
-    }
-
-    if (!data) {
-      const status = lastRes?.status ?? 0;
-      throw new Error(
-        `Bybit: no successful tickers response (tried ${bases.length} base(s); last HTTP ${status}). Set EXCHANGE_PROXY_URL or BYBIT_API_BASES if blocked`
-      );
-    }
+    if (data.retCode !== 0) throw new Error(`Bybit error: ${data.retCode}`);
 
     // Bybit also exposes fundingInterval via /v5/market/instruments-info
     // but the tickers endpoint does not include it. We use 8h as default
@@ -85,9 +42,9 @@ export class BybitAdapter implements ExchangeAdapter {
     for (const item of data.result.list) {
       if (!item.symbol.endsWith("USDT")) continue;
       if (!item.fundingRate) continue;
-      const tokenBase = normalizeBaseToken(item.symbol);
-      if (!tokenBase) continue;
-      if (filterTokens && !filterTokens.has(tokenBase)) continue;
+      const base = normalizeBaseToken(item.symbol);
+      if (!base) continue;
+      if (filterTokens && !filterTokens.has(base)) continue;
 
       const nextFunding = parseInt(item.nextFundingTime || "0", 10);
       // Bybit v5 tickers expose fundingIntervalHour directly
@@ -96,9 +53,9 @@ export class BybitAdapter implements ExchangeAdapter {
         : 8;
       if (![1, 2, 4, 8].includes(intervalHours)) intervalHours = 8;
 
-      result.set(tokenBase, {
+      result.set(base, {
         exchange: this.name,
-        baseToken: tokenBase,
+        baseToken: base,
         originalSymbol: item.symbol,
         rawFundingRate: parseFloat(item.fundingRate),
         markPrice: parseFloat(item.markPrice || "0"),

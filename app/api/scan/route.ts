@@ -13,22 +13,12 @@ import { XtAdapter } from "@/lib/exchanges/xt";
 import { MexcAdapter } from "@/lib/exchanges/mexc";
 import { BitMartAdapter } from "@/lib/exchanges/bitmart";
 import { KuCoinAdapter } from "@/lib/exchanges/kucoin";
-import {
-  ExchangeAdapter,
-  toFundingAPR,
-  FundingInfo,
-} from "@/lib/exchanges/types";
+import { ExchangeAdapter, toFundingAPR, FundingInfo } from "@/lib/exchanges/types";
 import { ArbitrageRow, ScanResponse } from "@/types";
 import { getTradingFeesPercent } from "@/lib/fees";
-import {
-  pickBinanceBybitDedicatedProxyUrl,
-  pickGlobalOutboundProxyUrl,
-  redactProxyUrl,
-} from "@/lib/exchanges/proxy-utils";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
-export const maxDuration = 300;
 
 /**
  * When `SCAN_UPSTREAM_URL` is set (e.g. Railway app origin), this route returns a **read-only
@@ -40,9 +30,49 @@ function scanUpstreamBase(): string | null {
   return raw.replace(/\/+$/, "");
 }
 
-async function tryRespondWithUpstreamScanCopy(): Promise<NextResponse | null> {
+function normalizeHost(host: string): string {
+  return host.split(":")[0]?.toLowerCase() ?? "";
+}
+
+/**
+ * Avoid accidental infinite recursion / self-proxying:
+ * if SCAN_UPSTREAM_URL points to the same host as the incoming /api/scan request,
+ * skip upstream and compute locally.
+ */
+function upstreamWouldLoopToSelf(request: Request, upstreamBase: string): boolean {
+  try {
+    const upstream = new URL(upstreamBase);
+    const incoming = new URL(request.url);
+
+    const upstreamHost = normalizeHost(upstream.hostname);
+    const selfHost = normalizeHost(
+      request.headers.get("x-forwarded-host")?.split(",")[0]?.trim() ||
+        incoming.hostname
+    );
+
+    if (!upstreamHost || !selfHost) return false;
+    return upstreamHost === selfHost;
+  } catch {
+    return false;
+  }
+}
+
+async function tryRespondWithUpstreamScanCopy(
+  request: Request
+): Promise<NextResponse | null> {
+  const upstreamDisabled =
+    process.env.SCAN_UPSTREAM_DISABLED?.trim() === "1" ||
+    process.env.SCAN_UPSTREAM_DISABLED?.trim()?.toLowerCase() === "true";
+  if (upstreamDisabled) return null;
+
   const base = scanUpstreamBase();
   if (!base) return null;
+  if (upstreamWouldLoopToSelf(request, base)) {
+    console.warn(
+      `[scan] SCAN_UPSTREAM_URL points to this same host (${base}); skipping upstream to avoid self-proxy loops`
+    );
+    return null;
+  }
 
   const url = `${base}/api/scan`;
   const timeoutMs = Math.max(
@@ -114,27 +144,7 @@ const SWR_TTL_MS = Math.max(
 let lastGoodResponse: ScanResponse | null = null;
 let refreshInProgress: Promise<void> | null = null;
 
-/** Last successful funding map per exchange; used when a refresh fails so rows are not wiped. */
-let lastExchangeFundingByName = new Map<string, Map<string, FundingInfo>>();
-
-let loggedOutboundProxyConfig = false;
-
 async function buildScanResponse(): Promise<ScanResponse> {
-  if (!loggedOutboundProxyConfig) {
-    loggedOutboundProxyConfig = true;
-    const dedicated = pickBinanceBybitDedicatedProxyUrl();
-    const globalP = pickGlobalOutboundProxyUrl();
-    if (dedicated || globalP) {
-      console.log(
-        `[scan] Proxy env: EXCHANGE_BINANCE_BYBIT_PROXY_URL=${dedicated ? redactProxyUrl(dedicated) : "(unset)"} EXCHANGE_PROXY_URL/HTTPS_PROXY=${globalP ? redactProxyUrl(globalP) : "(unset)"}`
-      );
-    } else {
-      console.log(
-        `[scan] No proxy env — all exchanges use direct egress (set EXCHANGE_PROXY_URL or EXCHANGE_BINANCE_BYBIT_PROXY_URL for Binance/Bybit on blocked hosts).`
-      );
-    }
-  }
-
   const errors: Record<string, string> = {};
   const fetchedAt = Date.now();
 
@@ -165,13 +175,19 @@ async function buildScanResponse(): Promise<ScanResponse> {
     ),
   ]);
 
+  // Build borrow map
   const borrowMap = new Map<
     string,
     { borrowAPR: number; liquidityToken: number | null; liquidityUsdt: number | null; spotPrice: number }
   >();
   if (borrowResult.status === "fulfilled") {
     for (const [token, info] of borrowResult.value.entries()) {
-      borrowMap.set(token, info);
+      borrowMap.set(token, {
+        borrowAPR: info.borrowAPR,
+        liquidityToken: info.liquidityToken,
+        liquidityUsdt: info.liquidityUsdt,
+        spotPrice: info.spotPrice,
+      });
     }
   } else {
     errors["Gate.Borrow"] =
@@ -180,67 +196,19 @@ async function buildScanResponse(): Promise<ScanResponse> {
         : String(borrowResult.reason);
   }
 
-  const scanDebugLiquidity =
-    process.env.SCAN_DEBUG_LIQUIDITY === "1" ||
-    process.env.SCAN_DEBUG_LIQUIDITY?.toLowerCase() === "true";
-  if (scanDebugLiquidity && borrowMap.size > 0) {
-    const maxDbg =
-      Math.max(1, parseInt(process.env.SCAN_DEBUG_LIQUIDITY_TOKENS ?? "10", 10) || 10);
-    let dbg = 0;
-    for (const token of gateTokens) {
-      if (dbg >= maxDbg) break;
-      const b = borrowMap.get(token);
-      if (!b) continue;
-      console.log(
-        `[DEBUG] Token: ${token}, Raw Liquidity: ${b.liquidityToken ?? "null"}, Spot: ${b.spotPrice}, Result USDT: ${b.liquidityUsdt ?? "null"}`
-      );
-      dbg++;
+  // Build exchange funding maps
+  const exchangeFundingMaps = new Map<string, Map<string, FundingInfo>>();
+  for (const result of adapterResults) {
+    if (result.status === "fulfilled") {
+      const { name, map, error } = result.value as {
+        name: string;
+        map: Map<string, FundingInfo>;
+        error?: string;
+      };
+      if (error) errors[name] = error;
+      exchangeFundingMaps.set(name, map);
     }
   }
-
-  // Build exchange funding maps (merge with per-exchange stale cache on failure)
-  const exchangeFundingMaps = new Map<string, Map<string, FundingInfo>>();
-  adapterResults.forEach((result, i) => {
-    const adapter = adapters[i];
-    const name = adapter.name;
-
-    if (result.status === "rejected") {
-      const msg =
-        result.reason instanceof Error
-          ? result.reason.message
-          : String(result.reason);
-      const stale = lastExchangeFundingByName.get(name);
-      if (stale && stale.size > 0) {
-        exchangeFundingMaps.set(name, stale);
-        errors[name] = `${msg} (cached funding until next successful fetch)`;
-      } else {
-        errors[name] = msg;
-        exchangeFundingMaps.set(name, new Map());
-      }
-      return;
-    }
-
-    const { map, error } = result.value as {
-      name: string;
-      map: Map<string, FundingInfo>;
-      error?: string;
-    };
-
-    if (error) {
-      const stale = lastExchangeFundingByName.get(name);
-      if (stale && stale.size > 0) {
-        exchangeFundingMaps.set(name, stale);
-        errors[name] = `${error} (cached funding until next successful fetch)`;
-      } else {
-        errors[name] = error;
-        exchangeFundingMaps.set(name, map);
-      }
-      return;
-    }
-
-    lastExchangeFundingByName.set(name, new Map(map));
-    exchangeFundingMaps.set(name, map);
-  });
 
   // Step 3: build arbitrage rows
   const rows: ArbitrageRow[] = [];
@@ -251,6 +219,7 @@ async function buildScanResponse(): Promise<ScanResponse> {
     const spotPrice = borrow?.spotPrice ?? 0;
     const liquidityToken = borrow?.liquidityToken ?? null;
     const liquidityUsdt = borrow?.liquidityUsdt ?? null;
+
     for (const [exchangeName, fundingMap] of exchangeFundingMaps.entries()) {
       const funding = fundingMap.get(token);
       if (!funding) continue;
@@ -280,7 +249,6 @@ async function buildScanResponse(): Promise<ScanResponse> {
         spotPrice,
         borrowLiquidityToken: liquidityToken,
         borrowLiquidityUsdt: liquidityUsdt,
-        borrowPoolFromUta: liquidityToken != null && liquidityToken > 0,
         nextFundingTime: funding.nextFundingTime,
         updatedAt: fetchedAt,
       });
@@ -293,8 +261,8 @@ async function buildScanResponse(): Promise<ScanResponse> {
   return { rows, fetchedAt, errors };
 }
 
-export async function GET() {
-  const upstream = await tryRespondWithUpstreamScanCopy();
+export async function GET(request: Request) {
+  const upstream = await tryRespondWithUpstreamScanCopy(request);
   if (upstream) return upstream;
 
   const now = Date.now();

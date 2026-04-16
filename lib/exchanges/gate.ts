@@ -47,16 +47,9 @@ interface GateEarnUniRate {
 
 interface GateEarnUniCurrency {
   currency: string; // e.g. "BTC"
-  amount?: string; // not always present in API response
-  lent_amount?: string; // not always present in API response
-  frozen_amount?: string; // not always present in API response
-}
-
-interface GateMarginPairLiquidityRaw {
-  base: string;
-  quote: string;
-  max_quote_amount?: string; // platform quote cap in USDT
-  status: number;
+  amount: string; // total in pool
+  lent_amount: string; // already lent out
+  frozen_amount: string; // frozen / reserved
 }
 
 /**
@@ -66,9 +59,6 @@ interface GateMarginPairLiquidityRaw {
  * - Borrow APR: GET /api/v4/earn/uni/rate (est_rate annual decimal)
  * - Liquidity:  GET /api/v4/earn/uni/currencies (available = amount - lent_amount - frozen_amount)
  * - Spot price: GET /api/v4/spot/tickers (for USDT conversion)
- *
- * Optional: GATE_MARGIN_QUOTE_CAP_FALLBACK=1 uses margin pair max_quote_amount when Uni pool
- * fields are missing (not real pool size — use only if you need non-zero placeholders).
  */
 export async function fetchGateBorrowInfo(
   tokens: string[]
@@ -88,24 +78,6 @@ export async function fetchGateBorrowInfo(
       (r) => (r.ok ? (r.json() as Promise<GateSpotTicker[]>) : ([] as GateSpotTicker[]))
     ),
   ]);
-
-  const useMarginQuoteCapFallback =
-    process.env.GATE_MARGIN_QUOTE_CAP_FALLBACK === "1" ||
-    process.env.GATE_MARGIN_QUOTE_CAP_FALLBACK?.toLowerCase() === "true";
-
-  const marginPairsRes: GateMarginPairLiquidityRaw[] = useMarginQuoteCapFallback
-    ? await fetchWithTimeout(
-        "https://api.gateio.ws/api/v4/margin/currency_pairs",
-        {},
-        15_000
-      )
-        .then((r) =>
-          r.ok
-            ? (r.json() as Promise<GateMarginPairLiquidityRaw[]>)
-            : ([] as GateMarginPairLiquidityRaw[])
-        )
-        .catch(() => [] as GateMarginPairLiquidityRaw[])
-    : [];
 
   const spotMap = new Map<string, number>();
   if (spotRes.status === "fulfilled") {
@@ -144,51 +116,22 @@ export async function fetchGateBorrowInfo(
     }
   }
 
-  const maxQuoteUsdtMap = new Map<string, number>();
-  if (useMarginQuoteCapFallback) {
-    for (const pair of marginPairsRes) {
-      if (pair.quote !== "USDT" || pair.status !== 1) continue;
-      const upper = (pair.base || "").toUpperCase();
-      if (!upper) continue;
-      const maxQ = parseFloat(pair.max_quote_amount || "0");
-      if (Number.isFinite(maxQ) && maxQ > 0) {
-        maxQuoteUsdtMap.set(upper, maxQ);
-      }
-    }
-  }
-
   const result = new Map<string, GateBorrowInfo>();
   for (const token of tokens) {
     const upper = token.toUpperCase();
     const spotPrice = spotMap.get(upper) ?? 0;
-    let liquidityToken = availableTokenMap.get(upper) ?? null;
-    let liquidityUsdt =
+    const liquidityToken = availableTokenMap.get(upper);
+    const liquidityUsdt =
       liquidityToken != null && spotPrice > 0 ? liquidityToken * spotPrice : null;
-
-    if (
-      useMarginQuoteCapFallback &&
-      (liquidityUsdt == null || liquidityUsdt <= 0) &&
-      maxQuoteUsdtMap.has(upper)
-    ) {
-      liquidityUsdt = maxQuoteUsdtMap.get(upper) ?? null;
-      if (
-        (liquidityToken == null || liquidityToken <= 0) &&
-        liquidityUsdt != null &&
-        spotPrice > 0
-      ) {
-        liquidityToken = liquidityUsdt / spotPrice;
-      }
-    }
 
     result.set(upper, {
       currency: upper,
       borrowAPR: aprMap.get(upper) ?? 0,
-      liquidityToken,
+      liquidityToken: liquidityToken ?? null,
       liquidityUsdt,
       spotPrice,
     });
   }
-
   return result;
 }
 

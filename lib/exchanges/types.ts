@@ -1,5 +1,3 @@
-import { pickGlobalOutboundProxyUrl } from "@/lib/exchanges/proxy-utils";
-
 export interface FundingInfo {
   exchange: string;
   baseToken: string; // normalized, e.g. "BTC"
@@ -57,13 +55,6 @@ export async function fetchWithTimeout(
   options: RequestInit = {},
   timeoutMs = 10000
 ): Promise<Response> {
-  const proxyUrl = pickGlobalOutboundProxyUrl();
-  if (proxyUrl) {
-    return await import("@/lib/outbound-fetch").then(({ fetchViaProxy }) =>
-      fetchViaProxy(url, proxyUrl, options, timeoutMs)
-    );
-  }
-
   const controller = new AbortController();
   const id = setTimeout(() => controller.abort(), timeoutMs);
   try {

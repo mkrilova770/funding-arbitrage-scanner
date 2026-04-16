@@ -13,7 +13,6 @@ export interface ArbitrageRow {
   spotPrice: number;
   borrowLiquidityToken: number | null; // available native tokens (e.g. 2620 BTC)
   borrowLiquidityUsdt: number | null;  // available USDT equivalent (e.g. 177_090_000)
-  borrowPoolFromUta: boolean;
   nextFundingTime: number; // unix ms
   updatedAt: number;       // unix ms
 }
@@ -35,11 +34,6 @@ export interface GateMarginPair {
   quote: string; // e.g. "USDT"
 }
 
-/** Bitget margin/currencies row (USDT isolated base). */
-export interface BitgetMarginPair extends GateMarginPair {
-  isCrossBorrowable: boolean;
-}
-
 export interface GateBorrowInfo {
   currency: string;                    // e.g. "BTC"
   borrowAPR: number;                   // annualized % (VIP 0)
@@ -48,7 +42,22 @@ export interface GateBorrowInfo {
   spotPrice: number;
 }
 
-/** Bitget: borrow APR and pool from public isolated interest + UTA margin-loans + spot */
+/** Bitget isolated margin pair (USDT quote) used by `lib/exchanges/bitget.ts`. */
+export interface BitgetMarginPair {
+  id: string; // e.g. "BTCUSDT" (Bitget margin symbol)
+  base: string;
+  quote: "USDT";
+  /** Whether Bitget marks the base as cross-borrowable (informational). */
+  isCrossBorrowable?: boolean;
+}
+
+/**
+ * Reasons we may skip Bitget signed isolated margin APIs.
+ * Returned by `probeBitgetMarginSignedApi()` in `lib/exchanges/bitget.ts`.
+ */
+export type BitgetMarginSignedBlockReason = "bad_auth" | "no_margin_account";
+
+/** Bitget borrow info (UTA public + optional signed isolated APIs). */
 export interface BitgetBorrowInfo {
   currency: string;
   borrowAPR: number;
@@ -58,14 +67,8 @@ export interface BitgetBorrowInfo {
   hasUtaBorrowQuote: boolean;
   hasIsolatedPublicQuote: boolean;
   hasSignedIsolatedQuote: boolean;
-  liquiditySource:
-    | "isolated-v2-private"
-    | "isolated-v1-public"
-    | "uta-v3-public"
-    | null;
+  liquiditySource: "isolated-v2-private" | "uta-v3-public" | null;
 }
-
-export type BitgetMarginSignedBlockReason = "no_margin_account" | "bad_auth";
 
 export interface ScanResponse {
   rows: ArbitrageRow[];

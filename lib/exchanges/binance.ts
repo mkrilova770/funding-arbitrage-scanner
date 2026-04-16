@@ -2,52 +2,9 @@ import {
   ExchangeAdapter,
   FundingInfo,
   normalizeBaseToken,
+  toFundingAPR,
+  fetchWithTimeout,
 } from "./types";
-import { fetchBinanceBybitWithProxyOrDirect } from "@/lib/exchanges/direct-then-proxy-fetch";
-
-function parseBinanceFapiBases(): string[] {
-  const raw = process.env.BINANCE_FAPI_BASES?.trim();
-  if (raw) {
-    return raw
-      .split(/[\s,]+/)
-      .map((s) => s.replace(/\/+$/, "").trim())
-      .filter(Boolean);
-  }
-  return [
-    "https://fapi.binance.com",
-    "https://fapi1.binance.com",
-    "https://fapi2.binance.com",
-    "https://fapi3.binance.com",
-  ];
-}
-
-async function fetchPremiumIndexWithFallback(): Promise<Response> {
-  const bases = parseBinanceFapiBases();
-  let last: Response | null = null;
-  for (const base of bases) {
-    const url = `${base}/fapi/v1/premiumIndex`;
-    const res = await fetchBinanceBybitWithProxyOrDirect(url, {}, 15_000);
-    last = res;
-    if (res.ok) {
-      if (base !== bases[0]) {
-        console.log(`[Binance] premiumIndex OK via ${base}`);
-      }
-      return res;
-    }
-    const snippet = await res
-      .clone()
-      .text()
-      .then((t) => t.slice(0, 400))
-      .catch(() => "");
-    console.error(
-      `[Binance] premiumIndex failed: ${url} → HTTP ${res.status} ${res.statusText} bodySnippet=${JSON.stringify(snippet)}`
-    );
-  }
-  const status = last?.status ?? 0;
-  throw new Error(
-    `Binance HTTP ${status} after ${bases.length} host(s) — set EXCHANGE_BINANCE_BYBIT_PROXY_URL or EXCHANGE_PROXY_URL if blocked (451/403)`
-  );
-}
 
 // Binance USDT-M perpetuals funding interval is 8 hours for most symbols.
 // Some symbols may have 4h or 1h intervals — the premiumIndex endpoint does not
@@ -71,7 +28,9 @@ export class BinanceAdapter implements ExchangeAdapter {
   async fetchFunding(
     filterTokens?: Set<string>
   ): Promise<Map<string, FundingInfo>> {
-    const res = await fetchPremiumIndexWithFallback();
+    const url = "https://fapi.binance.com/fapi/v1/premiumIndex";
+    const res = await fetchWithTimeout(url);
+    if (!res.ok) throw new Error(`Binance HTTP ${res.status}`);
     const data: BinancePremiumIndex[] = await res.json();
 
     const result = new Map<string, FundingInfo>();

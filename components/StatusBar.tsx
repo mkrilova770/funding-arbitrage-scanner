@@ -19,6 +19,7 @@ export function StatusBar({
   errors,
 }: StatusBarProps) {
   const errorKeys = Object.keys(errors);
+
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
     const id = setInterval(() => setNow(Date.now()), 1000);

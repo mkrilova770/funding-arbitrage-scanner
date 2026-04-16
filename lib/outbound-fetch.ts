@@ -3,7 +3,7 @@ import https from "node:https";
 import { URL } from "node:url";
 import { HttpsProxyAgent } from "https-proxy-agent";
 
-let cachedAgent: HttpsProxyAgent<string> | null | undefined;
+let cachedAgent: HttpsProxyAgent<string> | undefined;
 
 function getProxyAgent(proxyUrl: string): HttpsProxyAgent<string> {
   if (cachedAgent === undefined) {
@@ -12,10 +12,13 @@ function getProxyAgent(proxyUrl: string): HttpsProxyAgent<string> {
   return cachedAgent;
 }
 
-function mergeSignals(a?: AbortSignal, b?: AbortSignal): AbortSignal | undefined {
+function mergeSignals(
+  a?: AbortSignal | null,
+  b?: AbortSignal | null
+): AbortSignal | undefined {
   if (!a && !b) return undefined;
-  if (!a) return b;
-  if (!b) return a;
+  if (!a) return b ?? undefined;
+  if (!b) return a ?? undefined;
   const controller = new AbortController();
   const onAbort = () => controller.abort();
   if (a.aborted || b.aborted) {

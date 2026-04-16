@@ -13,7 +13,11 @@ import { XtAdapter } from "@/lib/exchanges/xt";
 import { MexcAdapter } from "@/lib/exchanges/mexc";
 import { BitMartAdapter } from "@/lib/exchanges/bitmart";
 import { KuCoinAdapter } from "@/lib/exchanges/kucoin";
-import { ExchangeAdapter, toFundingAPR, FundingInfo } from "@/lib/exchanges/types";
+import {
+  ExchangeAdapter,
+  toFundingAPR,
+  FundingInfo,
+} from "@/lib/exchanges/types";
 import { ArbitrageRow, ScanResponse } from "@/types";
 import { getTradingFeesPercent } from "@/lib/fees";
 
@@ -105,6 +109,9 @@ const SWR_TTL_MS = Math.max(
 let lastGoodResponse: ScanResponse | null = null;
 let refreshInProgress: Promise<void> | null = null;
 
+/** Last successful funding map per exchange; used when a refresh fails so rows are not wiped. */
+let lastExchangeFundingByName = new Map<string, Map<string, FundingInfo>>();
+
 async function buildScanResponse(): Promise<ScanResponse> {
   const errors: Record<string, string> = {};
   const fetchedAt = Date.now();
@@ -151,19 +158,49 @@ async function buildScanResponse(): Promise<ScanResponse> {
         : String(borrowResult.reason);
   }
 
-  // Build exchange funding maps
+  // Build exchange funding maps (merge with per-exchange stale cache on failure)
   const exchangeFundingMaps = new Map<string, Map<string, FundingInfo>>();
-  for (const result of adapterResults) {
-    if (result.status === "fulfilled") {
-      const { name, map, error } = result.value as {
-        name: string;
-        map: Map<string, FundingInfo>;
-        error?: string;
-      };
-      if (error) errors[name] = error;
-      exchangeFundingMaps.set(name, map);
+  adapterResults.forEach((result, i) => {
+    const adapter = adapters[i];
+    const name = adapter.name;
+
+    if (result.status === "rejected") {
+      const msg =
+        result.reason instanceof Error
+          ? result.reason.message
+          : String(result.reason);
+      const stale = lastExchangeFundingByName.get(name);
+      if (stale && stale.size > 0) {
+        exchangeFundingMaps.set(name, stale);
+        errors[name] = `${msg} (cached funding until next successful fetch)`;
+      } else {
+        errors[name] = msg;
+        exchangeFundingMaps.set(name, new Map());
+      }
+      return;
     }
-  }
+
+    const { map, error } = result.value as {
+      name: string;
+      map: Map<string, FundingInfo>;
+      error?: string;
+    };
+
+    if (error) {
+      const stale = lastExchangeFundingByName.get(name);
+      if (stale && stale.size > 0) {
+        exchangeFundingMaps.set(name, stale);
+        errors[name] = `${error} (cached funding until next successful fetch)`;
+      } else {
+        errors[name] = error;
+        exchangeFundingMaps.set(name, map);
+      }
+      return;
+    }
+
+    lastExchangeFundingByName.set(name, new Map(map));
+    exchangeFundingMaps.set(name, map);
+  });
 
   // Step 3: build arbitrage rows
   const rows: ArbitrageRow[] = [];

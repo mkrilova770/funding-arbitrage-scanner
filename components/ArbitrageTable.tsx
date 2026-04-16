@@ -15,6 +15,7 @@ type GroupSortKey =
   | "netAPR"
   | "fundingAPR"
   | "borrowAPR"
+  | "tradingFees"
   | "spread"
   | "exchangeCount"
   | "nextFundingTime"
@@ -26,6 +27,7 @@ type FlatSortKey =
   | "rawFunding"
   | "fundingAPR"
   | "borrowAPR"
+  | "tradingFees"
   | "netAPR"
   | "spread"
   | "nextFundingTime"
@@ -61,23 +63,40 @@ function fmtRaw(n: number): string {
   return `${sign}${(n * 100).toFixed(5)}%`;
 }
 
-/** Format a raw number to a short display string: 2620 → "2.62K", 177090000 → "177.09M" */
-function fmtLiq(n: number | null | undefined): string {
+/** Token amount: compact K/M/B when large; otherwise fixed precision for small caps */
+function fmtTokenAmount(n: number | null | undefined): string {
   if (n === null || n === undefined) return "—";
   if (n === 0) return "0";
-  if (n >= 1_000_000_000) return `${(n / 1_000_000_000).toFixed(2)}B`;
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(2)}M`;
-  if (n >= 1_000) return `${(n / 1_000).toFixed(2)}K`;
-  if (n >= 1) return n.toFixed(2);
-  return n.toPrecision(3);
+  const abs = Math.abs(n);
+  if (abs >= 1_000_000_000) return `${(n / 1_000_000_000).toFixed(2)}B`;
+  if (abs >= 1_000_000) return `${(n / 1_000_000).toFixed(2)}M`;
+  if (abs >= 1000) return `${(n / 1000).toFixed(2)}K`;
+  if (abs >= 1) return n.toFixed(4);
+  return n.toPrecision(4);
+}
+
+/** USDT leg: exact dollars with 2 decimals under $1000; compact K/M/B from $1000 up */
+function fmtUsdLiq(n: number | null | undefined): string {
+  if (n === null || n === undefined) return "—";
+  if (n === 0) return "$0.00";
+  const abs = Math.abs(n);
+  if (abs < 1000) return `$${n.toFixed(2)}`;
+  if (abs >= 1_000_000_000) return `$${(n / 1_000_000_000).toFixed(2)}B`;
+  if (abs >= 1_000_000) return `$${(n / 1_000_000).toFixed(2)}M`;
+  return `$${(n / 1000).toFixed(2)}K`;
+}
+
+function fmtRoundTripFeesPct(n: number | null | undefined): string {
+  if (n === null || n === undefined) return "—";
+  return `${n.toFixed(3)}%`;
 }
 
 function fmtAvailBorrow(
   token: number | null | undefined,
   usdt: number | null | undefined,
 ): string {
-  const t = token != null ? fmtLiq(token) : null;
-  const u = usdt != null ? `~$${fmtLiq(usdt)}` : null;
+  const t = token != null ? fmtTokenAmount(token) : null;
+  const u = usdt != null ? fmtUsdLiq(usdt) : null;
   if (t && u) return `${t} (${u})`;
   if (u) return u;
   if (t) return t;
@@ -170,6 +189,7 @@ function sortGroups(groups: TokenGroup[], key: GroupSortKey, dir: SortDir): Toke
       case "exchangeCount": av = a.exchangeCount;         bv = b.exchangeCount;         break;
       case "nextFundingTime":  av = a.best.nextFundingTime || 0;        bv = b.best.nextFundingTime || 0;        break;
       case "borrowLiquidity":  av = a.best.borrowLiquidityUsdt ?? -1;   bv = b.best.borrowLiquidityUsdt ?? -1;   break;
+      case "tradingFees":      av = a.best.tradingFees;                 bv = b.best.tradingFees;                 break;
       default:                 av = a.best.netAPR;                      bv = b.best.netAPR;
     }
     if (typeof av === "string" && typeof bv === "string") {
@@ -188,6 +208,7 @@ const GROUP_SORT_COLS: { key: GroupSortKey; label: string; title?: string }[] = 
   { key: "netAPR",              label: "Net APR",        title: "Best Net APR = Funding APR − Borrow APR − Trading fees" },
   { key: "fundingAPR",          label: "Funding APR",    title: "Best annualized funding APR (%)" },
   { key: "borrowAPR",           label: "Borrow APR",     title: "Gate Earn Uni borrow APR % (est_rate × 100)" },
+  { key: "tradingFees",         label: "Fees",           title: "Round-trip trading fees % (2× Gate spot + 2× futures taker, from config)" },
   { key: "spread",           label: "Spread",            title: "Best spread: (futures − spot) / spot × 100%" },
   { key: "borrowLiquidity",  label: "Available Borrow",  title: "Gate available borrow (Earn Uni pool converted to USDT)" },
   { key: "exchangeCount",    label: "Exchanges",         title: "Number of exchanges with a match" },
@@ -312,6 +333,10 @@ function GroupedTable({
                 <td className="px-3 py-2.5 font-mono text-orange-400">
                   {fmtPct(best.borrowAPR, 2)}
                 </td>
+                {/* Fees (round-trip) */}
+                <td className="px-3 py-2.5 font-mono text-amber-200/90 text-xs whitespace-nowrap">
+                  {fmtRoundTripFeesPct(best.tradingFees)}
+                </td>
                 {/* Spread */}
                 <td className="px-3 py-2.5 font-mono text-purple-400">
                   {fmtPct(best.spread, 3)}
@@ -379,6 +404,10 @@ function GroupedTable({
                     <td className="px-3 py-2 font-mono text-xs text-orange-400">
                       {fmtPct(opp.borrowAPR, 2)}
                     </td>
+                    {/* Fees */}
+                    <td className="px-3 py-2 font-mono text-xs text-amber-200/80 whitespace-nowrap">
+                      {fmtRoundTripFeesPct(opp.tradingFees)}
+                    </td>
                     {/* Spread */}
                     <td className="px-3 py-2 font-mono text-xs text-purple-400">
                       {fmtPct(opp.spread, 3)}
@@ -413,6 +442,7 @@ const FLAT_COLUMNS: { key: FlatSortKey; label: string; title?: string }[] = [
   { key: "rawFunding",          label: "Raw Funding" },
   { key: "fundingAPR",          label: "Funding APR",    title: "Annualized funding APR (%)" },
   { key: "borrowAPR",           label: "Borrow APR",     title: "Gate Earn Uni borrow APR % (est_rate × 100)" },
+  { key: "tradingFees",         label: "Fees",           title: "Round-trip trading fees % (2× Gate spot + 2× futures taker)" },
   { key: "spread",          label: "Spread",           title: "(futures − spot) / spot × 100%" },
   { key: "netAPR",          label: "Net APR",          title: "Net APR = Funding APR − Borrow APR − Trading fees" },
   { key: "borrowLiquidity", label: "Available Borrow", title: "Gate available borrow (Earn Uni pool converted to USDT)" },
@@ -465,6 +495,9 @@ function FlatTable({ rows, sortKey, sortDir, onSort, onRowClick }: FlatTableProp
             </td>
             <td className="px-3 py-2.5 font-mono text-orange-400">
               {fmtPct(row.borrowAPR, 2)}
+            </td>
+            <td className="px-3 py-2.5 font-mono text-amber-200/90 text-xs whitespace-nowrap">
+              {fmtRoundTripFeesPct(row.tradingFees)}
             </td>
             <td className="px-3 py-2.5 font-mono text-purple-400">
               {fmtPct(row.spread, 3)}
@@ -565,6 +598,7 @@ export function ArbitrageTable({ rows, search, onRowClick }: ArbitrageTableProps
   const flatRows = useMemo(() => {
     function getFlatValue(row: ArbitrageRow, key: FlatSortKey): number | string {
       if (key === "borrowLiquidity") return row.borrowLiquidityUsdt ?? -1;
+      if (key === "tradingFees") return row.tradingFees;
       const v = row[key as keyof ArbitrageRow];
       return (v === null ? -1 : v) as number | string;
     }

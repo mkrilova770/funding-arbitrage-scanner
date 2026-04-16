@@ -23,64 +23,39 @@ function mergeAbortSignals(
   return controller.signal;
 }
 
+let loggedBinanceBybitProxyOnce = false;
+
 /**
- * Binance/Bybit: try direct egress first (so Gate etc. can stay unproxied when only
- * EXCHANGE_BINANCE_BYBIT_PROXY_URL is set). On HTTP 403/451, retry via dedicated
- * proxy, then global EXCHANGE_PROXY_URL / HTTPS_PROXY / HTTP_PROXY.
+ * Binance/Bybit: if EXCHANGE_BINANCE_BYBIT_PROXY_URL or EXCHANGE_PROXY_URL (or
+ * HTTPS_PROXY/HTTP_PROXY) is set, all requests go through that proxy immediately.
+ * Otherwise uses direct fetch with timeout.
  */
-export async function fetchWithDirectFirstThenProxyOnBlock(
+export async function fetchBinanceBybitWithProxyOrDirect(
   url: string,
   init: RequestInit = {},
   timeoutMs = 10000
 ): Promise<Response> {
+  const proxyUrl =
+    pickBinanceBybitDedicatedProxyUrl() || pickGlobalOutboundProxyUrl();
+
+  if (proxyUrl) {
+    if (!loggedBinanceBybitProxyOnce) {
+      loggedBinanceBybitProxyOnce = true;
+      console.log(
+        `[Binance/Bybit] using outbound proxy ${redactProxyUrl(proxyUrl)}`
+      );
+    }
+    return fetchViaProxy(url, proxyUrl, init, timeoutMs);
+  }
+
   const timeoutController = new AbortController();
   const id = setTimeout(() => timeoutController.abort(), timeoutMs);
-  let directRes: Response;
   try {
     const signal =
       mergeAbortSignals(init.signal, timeoutController.signal) ??
       timeoutController.signal;
-    directRes = await fetch(url, {
-      ...init,
-      signal,
-    });
+    return await fetch(url, { ...init, signal });
   } finally {
     clearTimeout(id);
   }
-
-  if (directRes.ok) return directRes;
-
-  const blocked = directRes.status === 403 || directRes.status === 451;
-  if (!blocked) return directRes;
-
-  const dedicated = pickBinanceBybitDedicatedProxyUrl();
-  const globalP = pickGlobalOutboundProxyUrl();
-  const proxyOrder = [dedicated, globalP].filter(
-    (p, i, a): p is string => Boolean(p) && a.indexOf(p) === i
-  );
-
-  if (proxyOrder.length === 0) {
-    console.warn(
-      `[exchange-fetch] ${url} → HTTP ${directRes.status} (direct). Set EXCHANGE_BINANCE_BYBIT_PROXY_URL or EXCHANGE_PROXY_URL (http://USER:PASS@HOST:PORT) on Railway.`
-    );
-    return directRes;
-  }
-
-  let lastProxied: Response | null = null;
-  for (const proxyUrl of proxyOrder) {
-    console.warn(
-      `[exchange-fetch] ${url} → HTTP ${directRes.status} (direct), retry via proxy ${redactProxyUrl(proxyUrl)}`
-    );
-    try {
-      const proxied = await fetchViaProxy(url, proxyUrl, init, timeoutMs);
-      lastProxied = proxied;
-      if (proxied.ok) return proxied;
-      if (proxied.status !== 403 && proxied.status !== 451) return proxied;
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      console.error(`[exchange-fetch] proxy retry failed: ${msg}`);
-    }
-  }
-
-  return lastProxied ?? directRes;
 }

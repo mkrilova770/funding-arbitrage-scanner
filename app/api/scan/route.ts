@@ -130,7 +130,7 @@ async function buildScanResponse(): Promise<ScanResponse> {
       );
     } else {
       console.log(
-        `[scan] No proxy env — Gate uses direct fetch; Binance/Bybit try direct then 403/451 retry via proxy if you add EXCHANGE_BINANCE_BYBIT_PROXY_URL or EXCHANGE_PROXY_URL.`
+        `[scan] No proxy env — all exchanges use direct egress (set EXCHANGE_PROXY_URL or EXCHANGE_BINANCE_BYBIT_PROXY_URL for Binance/Bybit on blocked hosts).`
       );
     }
   }
@@ -178,6 +178,24 @@ async function buildScanResponse(): Promise<ScanResponse> {
       borrowResult.reason instanceof Error
         ? borrowResult.reason.message
         : String(borrowResult.reason);
+  }
+
+  const scanDebugLiquidity =
+    process.env.SCAN_DEBUG_LIQUIDITY === "1" ||
+    process.env.SCAN_DEBUG_LIQUIDITY?.toLowerCase() === "true";
+  if (scanDebugLiquidity && borrowMap.size > 0) {
+    const maxDbg =
+      Math.max(1, parseInt(process.env.SCAN_DEBUG_LIQUIDITY_TOKENS ?? "10", 10) || 10);
+    let dbg = 0;
+    for (const token of gateTokens) {
+      if (dbg >= maxDbg) break;
+      const b = borrowMap.get(token);
+      if (!b) continue;
+      console.log(
+        `[DEBUG] Token: ${token}, Raw Liquidity: ${b.liquidityToken ?? "null"}, Spot: ${b.spotPrice}, Result USDT: ${b.liquidityUsdt ?? "null"}`
+      );
+      dbg++;
+    }
   }
 
   // Build exchange funding maps (merge with per-exchange stale cache on failure)

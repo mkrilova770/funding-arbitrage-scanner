@@ -5,7 +5,6 @@ import {
   fetchWithTimeout,
 } from "./types";
 import { GateMarginPair, GateBorrowInfo } from "@/types";
-import { formatUsdBorrowLiquidity } from "@/lib/liquidity-display";
 
 // ─── Margin pairs ───────────────────────────────────────────────────────────
 
@@ -67,6 +66,9 @@ interface GateMarginPairLiquidityRaw {
  * - Borrow APR: GET /api/v4/earn/uni/rate (est_rate annual decimal)
  * - Liquidity:  GET /api/v4/earn/uni/currencies (available = amount - lent_amount - frozen_amount)
  * - Spot price: GET /api/v4/spot/tickers (for USDT conversion)
+ *
+ * Optional: GATE_MARGIN_QUOTE_CAP_FALLBACK=1 uses margin pair max_quote_amount when Uni pool
+ * fields are missing (not real pool size — use only if you need non-zero placeholders).
  */
 export async function fetchGateBorrowInfo(
   tokens: string[]
@@ -86,17 +88,24 @@ export async function fetchGateBorrowInfo(
       (r) => (r.ok ? (r.json() as Promise<GateSpotTicker[]>) : ([] as GateSpotTicker[]))
     ),
   ]);
-  const marginPairsRes = await fetchWithTimeout(
-    "https://api.gateio.ws/api/v4/margin/currency_pairs",
-    {},
-    15_000
-  )
-    .then((r) =>
-      r.ok
-        ? (r.json() as Promise<GateMarginPairLiquidityRaw[]>)
-        : ([] as GateMarginPairLiquidityRaw[])
-    )
-    .catch(() => [] as GateMarginPairLiquidityRaw[]);
+
+  const useMarginQuoteCapFallback =
+    process.env.GATE_MARGIN_QUOTE_CAP_FALLBACK === "1" ||
+    process.env.GATE_MARGIN_QUOTE_CAP_FALLBACK?.toLowerCase() === "true";
+
+  const marginPairsRes: GateMarginPairLiquidityRaw[] = useMarginQuoteCapFallback
+    ? await fetchWithTimeout(
+        "https://api.gateio.ws/api/v4/margin/currency_pairs",
+        {},
+        15_000
+      )
+        .then((r) =>
+          r.ok
+            ? (r.json() as Promise<GateMarginPairLiquidityRaw[]>)
+            : ([] as GateMarginPairLiquidityRaw[])
+        )
+        .catch(() => [] as GateMarginPairLiquidityRaw[])
+    : [];
 
   const spotMap = new Map<string, number>();
   if (spotRes.status === "fulfilled") {
@@ -135,15 +144,16 @@ export async function fetchGateBorrowInfo(
     }
   }
 
-  // Public fallback for liquidity: margin pair quote cap (USDT).
   const maxQuoteUsdtMap = new Map<string, number>();
-  for (const pair of marginPairsRes) {
-    if (pair.quote !== "USDT" || pair.status !== 1) continue;
-    const upper = (pair.base || "").toUpperCase();
-    if (!upper) continue;
-    const maxQ = parseFloat(pair.max_quote_amount || "0");
-    if (Number.isFinite(maxQ) && maxQ > 0) {
-      maxQuoteUsdtMap.set(upper, maxQ);
+  if (useMarginQuoteCapFallback) {
+    for (const pair of marginPairsRes) {
+      if (pair.quote !== "USDT" || pair.status !== 1) continue;
+      const upper = (pair.base || "").toUpperCase();
+      if (!upper) continue;
+      const maxQ = parseFloat(pair.max_quote_amount || "0");
+      if (Number.isFinite(maxQ) && maxQ > 0) {
+        maxQuoteUsdtMap.set(upper, maxQ);
+      }
     }
   }
 
@@ -155,10 +165,17 @@ export async function fetchGateBorrowInfo(
     let liquidityUsdt =
       liquidityToken != null && spotPrice > 0 ? liquidityToken * spotPrice : null;
 
-    // If Earn Uni currencies lacks pool balance fields, fallback to public margin quote cap.
-    if ((liquidityUsdt == null || liquidityUsdt <= 0) && maxQuoteUsdtMap.has(upper)) {
+    if (
+      useMarginQuoteCapFallback &&
+      (liquidityUsdt == null || liquidityUsdt <= 0) &&
+      maxQuoteUsdtMap.has(upper)
+    ) {
       liquidityUsdt = maxQuoteUsdtMap.get(upper) ?? null;
-      if ((liquidityToken == null || liquidityToken <= 0) && liquidityUsdt != null && spotPrice > 0) {
+      if (
+        (liquidityToken == null || liquidityToken <= 0) &&
+        liquidityUsdt != null &&
+        spotPrice > 0
+      ) {
         liquidityToken = liquidityUsdt / spotPrice;
       }
     }
@@ -170,17 +187,6 @@ export async function fetchGateBorrowInfo(
       liquidityUsdt,
       spotPrice,
     });
-  }
-
-  let liquidityLogCount = 0;
-  const maxLiquidityLogs = 8;
-  for (const [upper, info] of result) {
-    if (info.liquidityUsdt == null) continue;
-    if (liquidityLogCount >= maxLiquidityLogs) break;
-    const raw = info.liquidityUsdt;
-    const formatted = formatUsdBorrowLiquidity(raw);
-    console.log(`[Gate Liquidity] Raw: ${raw}, Formatted: ${formatted} token=${upper}`);
-    liquidityLogCount++;
   }
 
   return result;

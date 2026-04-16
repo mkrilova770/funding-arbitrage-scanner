@@ -3,7 +3,7 @@ import {
   FundingInfo,
   normalizeBaseToken,
 } from "./types";
-import { fetchWithDirectFirstThenProxyOnBlock } from "@/lib/exchanges/direct-then-proxy-fetch";
+import { fetchBinanceBybitWithProxyOrDirect } from "@/lib/exchanges/direct-then-proxy-fetch";
 
 function parseBinanceFapiBases(): string[] {
   const raw = process.env.BINANCE_FAPI_BASES?.trim();
@@ -26,7 +26,7 @@ async function fetchPremiumIndexWithFallback(): Promise<Response> {
   let last: Response | null = null;
   for (const base of bases) {
     const url = `${base}/fapi/v1/premiumIndex`;
-    const res = await fetchWithDirectFirstThenProxyOnBlock(url, {}, 15_000);
+    const res = await fetchBinanceBybitWithProxyOrDirect(url, {}, 15_000);
     last = res;
     if (res.ok) {
       if (base !== bases[0]) {

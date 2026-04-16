@@ -45,7 +45,7 @@ async function fetchPremiumIndexWithFallback(): Promise<Response> {
   }
   const status = last?.status ?? 0;
   throw new Error(
-    `Binance HTTP ${status} after ${bases.length} host(s) — set EXCHANGE_PROXY_URL or BINANCE_FAPI_BASES if blocked (451/403)`
+    `Binance HTTP ${status} after ${bases.length} host(s) — set EXCHANGE_BINANCE_BYBIT_PROXY_URL or EXCHANGE_PROXY_URL if blocked (451/403)`
   );
 }
 
